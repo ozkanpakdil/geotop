@@ -1,0 +1,68 @@
+[package]
+name = "geotop"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+authors = ["geotop contributors"]
+description = "htop-style real-time network & log monitor with live global geolocation map"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourname/geotop"
+readme = "README.md"
+keywords = ["network", "monitor", "tui", "geolocation", "ratatui"]
+categories = ["network", "command-line-utilities", "visualization"]
+
+[dependencies]
+# TUI
+ratatui = { version = "0.30", features = ["serde", "macros"] }
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+# image crate (for in-memory map manipulation)
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# SVG rasterization for bundled/default world map
+resvg = { version = "0.48", default-features = false, features = ["text", "system-fonts"] }
+# GUI mode
+eframe = { version = "0.35", default-features = false, features = ["default_fonts", "wgpu"] }
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+# IP / Packet handling
+pnet = { version = "0.34", features = ["serde"] }
+# IP geolocation (kept in sync with `GeoSentinel-Ingress` 0.1)
+ip2location = "0.6"
+# File watching
+notify = "6.1"
+notify-debouncer-mini = "0.4"
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Errors / utils
+anyhow = "1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+# Regex parsing for log formats
+regex = "1.10"
+once_cell = "1"
+# Concurrency primitives
+parking_lot = "0.12"
+dashmap = "6"
+# LRU cache
+lru = "0.12"
+# Lock-free live swap for hot-reloaded databases (matches GeoSentinel).
+arc-swap = "1"
+# HTTP client (DB downloader)
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
+# Zip extraction (matches GeoSentinel – no shelling out to `unzip`).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Async helpers
+futures-util = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+# XDG-aware config paths (~/.local/share/geotop)
+directories = "5"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
