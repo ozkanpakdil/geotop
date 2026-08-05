@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use notify::RecursiveMode;
 use notify_debouncer_mini::{
-    new_debouncer, DebounceEventResult, DebouncedEventKind, Debouncer, DebounceEventHandler,
+    new_debouncer, DebounceEventHandler, DebounceEventResult, DebouncedEventKind, Debouncer,
 };
 use regex::Regex;
 use tokio::sync::mpsc;
@@ -39,10 +39,7 @@ pub struct LogTailerHandle {
 }
 
 /// Spawn a tailer task. Returns a handle; dropped on cancel.
-pub fn spawn(
-    path: PathBuf,
-    tx: mpsc::UnboundedSender<ConnectionEvent>,
-) -> Result<LogTailerHandle> {
+pub fn spawn(path: PathBuf, tx: mpsc::UnboundedSender<ConnectionEvent>) -> Result<LogTailerHandle> {
     let cancel = CancellationToken::new();
     let cancel_child = cancel.clone();
     let path_clone = path.clone();
@@ -66,7 +63,9 @@ pub fn spawn(
     // Watch the parent directory of the file (or the file itself) so
     // we see appends and rotations.
     let watch_target = if path.exists() {
-        path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
+        path.parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
     } else {
         path.clone()
     };
@@ -137,8 +136,7 @@ fn run_loop_blocking(
 /// as a list of completed lines (the trailing partial line is buffered
 /// until a newline arrives).
 fn read_new_lines(path: &Path, offset: &mut u64) -> Result<Vec<String>> {
-    let mut file = File::open(path)
-        .with_context(|| format!("opening {}", path.display()))?;
+    let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let len = file.metadata()?.len();
 
     // File rotated/truncated: reset offset.
@@ -179,9 +177,7 @@ fn parse_line(line: &str, combined: &Regex, common: &Regex) -> Option<Connection
     let method = caps.name("method").map(|m| m.as_str().to_string());
     let path = caps.name("path").map(|p| p.as_str().to_string());
     let ua = caps.name("ua").map(|u| u.as_str().to_string());
-    let size: Option<u64> = caps
-        .name("size")
-        .and_then(|s| s.as_str().parse().ok());
+    let size: Option<u64> = caps.name("size").and_then(|s| s.as_str().parse().ok());
 
     let severity = match status {
         500..=599 => Severity::Alert,

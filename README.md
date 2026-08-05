@@ -4,12 +4,15 @@
 > geolocation map.
 
 `geotop` watches your network interface, your nginx/apache access log,
-or both – and renders every incoming connection onto a world map in
-your terminal. Built on `ratatui` + `ratatui-image` so it scales from
-modern Kitty/WezTerm (Kitty Graphics Protocol) down to any TTY
-(half-block glyph fallback).
+or both – and renders every incoming connection onto a world map.
+Run it in your terminal with `ratatui` + `ratatui-image`
+(Kitty Graphics Protocol → Sixel → half-block fallback), or open a
+native GUI window with `--gui`.
 
-![hero](assets/world-dark.png)
+![geotop GUI dashboard](assets/geotop-gui.jpg)
+
+> Native GUI mode (`--gui`) showing the live world map, top-talkers bar
+> chart, throughput sparkline and the live connection log.
 
 ---
 
@@ -28,8 +31,7 @@ modern Kitty/WezTerm (Kitty Graphics Protocol) down to any TTY
   block on a Mutex. `geotop` polls mtimes every 60s while it runs
   so external DB updates are picked up without restarting.
 - **Proxy / VPN / datacenter / Tor detection** via IP2PROXY-LITE-PX11
-  (optional, auto-downloaded, same `&token=` auth convention as
-  **[GeoSentinel-Ingress][geos]**).
+  (optional, auto-downloaded).
 - **High-resolution dynamic map** rendered through `ratatui-image 11`,
   auto-detecting the highest protocol your terminal supports:
   1. **Kitty Graphics Protocol** – crisp, per-pixel.
@@ -40,7 +42,37 @@ modern Kitty/WezTerm (Kitty Graphics Protocol) down to any TTY
   (right).
 - **Glowing connection dots** that pulse and fade, with a "home
   location" indicator showing where *you* sit.
+- **Auto-detected home marker**: on startup geotop looks up your public
+  IP and places a persistent, larger marker at that lat/lon. Override
+  with `--home lat,lon` or `map.home.lat` / `map.home.lon` in config.
+- **Matrix-style connection lines** from home to every active marker,
+  toggled with `l` (TUI) or from the top bar (GUI).
+- **Native GUI** with `--gui`: zoomable/pannable map, scrollable live
+  log, top-talkers bar chart, throughput sparkline. Mouse wheel zooms,
+  drag pans, hover over a marker to see IP/city/proxy details,
+  city/country labels scale with zoom.
+- **Text-only mode** with `--no-map` for a compact htop-style
+  dashboard when your terminal cannot display images or you only care
+  about the numbers. Works in both the terminal (`--no-map`) and the
+  native GUI (`--gui --no-map`).
 - **Pause / clear / focus / quit** bound to single keys.
+
+---
+
+## Screenshots
+
+### Terminal UI (`--gui` omitted)
+
+![geotop TUI dashboard](assets/geotop-tui.png)
+
+The terminal dashboard renders the world map with half-block fallback
+so it works in any terminal. The right-hand panel shows top talkers,
+proxy/datacenter/Tor share and a throughput sparkline; the bottom
+panel is the live connection log.
+
+### CLI help
+
+![geotop --help](assets/geotop-help.png)
 
 ---
 
@@ -51,6 +83,11 @@ modern Kitty/WezTerm (Kitty Graphics Protocol) down to any TTY
 git clone https://github.com/yourname/geotop
 cd geotop
 cargo install --path .
+
+# 2. get a free IP2Location LITE token (only needed once)
+#    see "IP2Location token" below, then either:
+#    export GEOTOP_DOWNLOAD_TOKEN=<your-token>
+#    or pass --download-token <your-token>
 
 # sniff all network interfaces
 sudo geotop --all-interfaces
@@ -67,7 +104,7 @@ sudo geotop -i en0 -f /var/log/nginx/access.log
 # list interfaces available to the sniffer
 geotop list-ifaces
 
-# 6. pre-download the IP2Location databases and exit
+# pre-download the IP2Location databases and exit
 geotop update-dbs
 ```
 
@@ -87,13 +124,54 @@ Default download URLs (`src/db_downloader.rs`):
 | Proxy | `https://www.ip2location.com/download?file=PX11LITEBIN[&token=…]`            |
 
 DB management is implemented in [`src/db_downloader.rs`](src/db_downloader.rs)
-and is structurally identical to the manager in
-**[GeoSentinel-Ingress][geos]**: `DatabaseManager` with
-`ensure_databases()` (download → extract via `zip` crate → open with
-`DB::from_file` → `print_db_info()` self-check) and `hot_reload()`
-(mtime polling, atomic `ArcSwapOption::store`).
 
-[geos]: https://github.com/yourorg/GeoSentinel-Ingress
+---
+
+## IP2Location token
+
+The free IP2Location LITE databases require an authenticated
+download token. `geotop` cannot silently download them without one.
+
+### What happens if you forget the token
+
+If you run `geotop` without a token and without pre-staged `.BIN`
+files, the app:
+
+1. Prints a prompt telling you a token is required.
+2. Opens the IP2Location LITE signup/download page in your default
+   browser.
+3. Exits with instructions on how to provide the token.
+
+```bash
+$ geotop -f /var/log/nginx/access.log
+╔════════════════════════════════════════════════════════════════════╗
+║  IP2Location download token required                               ║
+╠════════════════════════════════════════════════════════════════════╣
+║  geotop needs a free IP2Location LITE token to download the        ║
+║  geolocation database. Opening the signup page in your browser…  ║
+╚════════════════════════════════════════════════════════════════════╝
+Error: no GEOTOP_DOWNLOAD_TOKEN set.
+
+1. Sign up for a free token at https://www.ip2location.com/free/download?file=DB11LITEBIN
+2. Export it in your shell: export GEOTOP_DOWNLOAD_TOKEN=<your-token>
+3. Or stage the .BIN files manually with --db-path / --proxy-db-path
+4. Or provide the token on the command line with --download-token <your-token>
+5. Re-run geotop
+```
+
+### How to provide the token
+
+Choose whichever is most convenient for your workflow:
+
+| Method | Example |
+|--------|---------|
+| Shell environment variable | `export GEOTOP_DOWNLOAD_TOKEN=twU8vNJ0rXsqy9BY9Z5FjXLvmJHe5o9zv5f8lEwpmDxDg8WNOiC5HdcEYtcuSeaA` |
+| Command-line flag | `geotop --download-token twU8vNJ0rXsqy9BY9Z5FjXLvmJHe5o9zv5f8lEwpmDxDg8WNOiC5HdcEYtcuSeaA -f access.log` |
+| Pre-stage the DBs | `geotop --db-path /path/to/IP2LOCATION-LITE-DB11.BIN --proxy-db-path /path/to/IP2PROXY-LITE-PX11.BIN -f access.log` |
+
+The `--download-token` flag and `GEOTOP_DOWNLOAD_TOKEN` environment
+variable are accepted by the normal run modes **and** by the
+`update-dbs` subcommand.
 
 ---
 
@@ -119,43 +197,22 @@ geotop --db-path /path/to/IP2LOCATION-LITE-DB11.BIN \
 
 ## CLI
 
-```
-USAGE:
-    geotop [OPTIONS] [-i IFACE] [-f PATH]...
-    geotop <COMMAND>
+CLI flags and subcommands are defined in [`src/main.rs`](src/main.rs#L54) via `clap`'s derive macros.  Run:
 
-OPTIONS:
-    -i, --interface <IFACE>            Network interface to sniff (e.g. `eth0`,
-                                       `wlan0`, `en0`). Use `geotop list-ifaces`
-                                       to discover available interfaces
-    -f, --file <PATH>                  Web server log file(s) to tail. Repeat
-                                       the flag for multiple files
-        --db-dir <DIR>                 Override the directory containing the
-                                       IP2LOCATION / IP2PROXY DBs
-        --db-path <PATH>               Skip the auto-downloader and use this
-                                       exact `.BIN` file
-        --proxy-db-path <PATH>         Skip the auto-downloader for IP2PROXY
-                                       and use this exact `.BIN` file
-        --map-path <PATH>              Path to a dark-mode equirectangular world
-                                       map (PNG/JPEG)
-        --no-map                       Disable the map panel (text-only dashboard)
-        --home <LAT,LON>               Host coordinates for the pulsing "home"
-                                       dot. Format: `lat,lon`
-        --no-proxy                     Disable proxy / VPN / datacenter
-                                       classification
-    -v, --verbose...                   Verbose logging (`-v`, `-vv`, …)
-    -h, --help                         Print help
-    -V, --version                      Print version
-
-COMMANDS:
-    list-ifaces                        Print the available network interfaces
-                                       and exit
-    update-dbs                         Download + extract IP2Location + IP2Proxy
-                                       LITE DBs into `--db-dir` and exit
-    help                               Print this message
+```bash
+geotop --help
+geotop <COMMAND> --help
 ```
+
+for the canonical, always-up-to-date reference.  Key groups:
+- ingestion: `-i/--interface`, `-f/--file`, `--all-interfaces`
+- databases: `--db-dir`, `--db-path`, `--proxy-db-path`, `--no-proxy`, `--download-token`
+- display: `--gui`, `--no-map`, `--home`
+- config / logging: `-C/--config`, `-v/--verbose`
 
 ### Keyboard controls
+
+#### TUI (terminal)
 
 | Key              | Action                                                   |
 |------------------|----------------------------------------------------------|
@@ -163,8 +220,85 @@ COMMANDS:
 | `1` / `2` / `3`  | Jump straight to one of the three panels                 |
 | `p`              | Pause ingestion (map freezes, counters keep counting)    |
 | `c`              | Clear all active dots                                    |
+| `l`              | Toggle Matrix-style connection lines (home → markers)    |
 | `↑` / `↓`        | Scroll the live log                                      |
 | `q` / `Esc`      | Quit                                                     |
+
+#### GUI (`--gui`)
+
+| Input            | Action                                                   |
+|------------------|----------------------------------------------------------|
+| `p`              | Pause ingestion                                          |
+| `c`              | Clear all active dots                                    |
+| `l`              | Toggle Matrix-style connection lines                     |
+| `+` / `=`        | Zoom in on the map                                       |
+| `-`              | Zoom out on the map                                      |
+| `0`              | Reset zoom/pan to the full-world view                    |
+| `q` / `Esc`      | Quit                                                     |
+| Mouse wheel      | Zoom in/out at the cursor position                       |
+| Drag             | Pan the zoomed map                                       |
+| Hover marker     | Tooltip with IP, country, city and proxy type            |
+| Hover home pulse | Tooltip with public IP, detected city and coordinates    |
+
+---
+
+## Configuration
+
+`geotop` reads a JSON config file from `~/.config/geotop/config.json`.  Use
+`-C, --config <PATH>` to point at a different file.  All fields are optional
+and fall back to the same defaults used before configuration existed.
+
+A documented example ships at [`assets/config.example.json`](assets/config.example.json):
+
+```bash
+cp assets/config.example.json ~/.config/geotop/config.json
+# edit to taste
+```
+
+### What you can configure
+
+| Group | Fields | Effect |
+|-------|--------|--------|
+| Top-level | `marker_ttl_seconds` | How long a packet/log marker stays on the map (1–3600 s). |
+| Top-level | `max_markers` | Maximum number of live markers retained. |
+| Top-level | `marker_style` | Marker shape: `dot`, `ring`, `cross`, or `x`. Default `ring`. |
+| Top-level | `marker_size` | Marker radius / arm length in pixels (1–20). Default `8`. |
+| `map.home` | `lat`, `lon` | Fallback coordinates of the pulsing home marker. |
+| `map.home` | `marker_style`, `marker_size` | Home marker shape/size. Default size `14`. |
+| `map.labels` | `show_country_labels` | Show country names on the map (GUI). |
+| `map.labels` | `show_city_labels` | Show city names next to markers when zoomed in (GUI). |
+| `map.labels` | `city_label_zoom` | Minimum GUI zoom level before city labels appear. |
+| `connection_lines` | `enabled` | Start with Matrix-style lines on/off. |
+| `connection_lines` | `color`, `glow_size` | Line color and glow radius. |
+| `colors` | `info`, `warn`, `alert`, `focus`, `dim`, `home`, `ocean`, `land` | Hex colors (`#RRGGBB` or `#RRGGBBAA`) used in both TUI and GUI. |
+| `fonts` | `tui_font_width`, `tui_font_height` | Override the terminal font size `ratatui-image` uses in TUI mode. |
+| `fonts` | `gui_body`, `gui_heading` | Base text sizes in GUI mode. |
+| `fonts` | `gui_font_file` | Path to a custom `.ttf`/`.otf` font for GUI mode. |
+| `window` | `width`, `height`, `min_width`, `min_height` | Native GUI window geometry. |
+
+**Note on `map.home.lat/lon`:** If you do not set them and do not pass `--home`, geotop auto-detects your public IP at startup and geolocates it. The config values are used only as a fallback if detection fails.
+
+### Hot-reload
+
+The config file is watched while `geotop` runs.  Changes to **colors**, marker
+TTL, `max_markers`, `marker_style`, `marker_size`, `home`, `connection_lines`,
+`map.labels`, GUI fonts, and `window` size apply immediately.  A log line tells
+you what changed.
+
+---
+
+## Marker colors and severity
+
+Connection dots change color based on how suspicious the traffic looks:
+
+| Color | Meaning |
+|-------|---------|
+| Green (`info`) | Normal traffic. |
+| Yellow (`warn`) | A single source IP has generated ≥ 30 events within the current session. |
+| Red (`alert`) | Proxy / VPN / datacenter / Tor traffic, or an HTTP 4xx/5xx status from a log event. |
+
+Private, loopback, link-local and unspecified addresses are never plotted
+on the map, but they still appear in the live log.
 
 ---
 
@@ -246,8 +380,8 @@ cargo build --release
 # strip + optimise
 cargo build --release --locked
 
-# try the bundled sample log (no network, no privileges, no DBs needed
-# if you point --db-path at an existing BIN – see below)
+# try the bundled sample log (no network, no privileges, DBs required
+# unless you point --db-path at an existing BIN)
 ./target/release/geotop -f ./samples/example.log
 ```
 
@@ -257,13 +391,8 @@ Requirements:
   `Default`-clap derive).
 - **libpcap headers** (Linux) or the equivalent on macOS/Windows for
   `pnet`'s raw datalink channel. Not needed if you only use `-f`.
-- The IP2LOCATION-LITE-DB11.BIN file (auto-downloaded, or pre-staged
-  with `--db-path`).
-- A world map PNG – drop one into `./assets/world-dark.png` (any
-  dark equirectangular projection, 2048×1024 recommended) or pass
-  `--map-path /path/to/yours.png`. Without one and without
-  `--map-path`, the dashboard still works in `--no-map` mode (or
-  shows solid black if you have a TTY but no map file).
+- The IP2LOCATION-LITE-DB11.BIN file (auto-downloaded with a token, or pre-staged
+  with `--db-path` / `--download-token`).
 
 ---
 
@@ -275,6 +404,7 @@ src/
 ├── db_downloader.rs       # DatabaseManager: download / extract / mmap / hot-reload
 │                          #   (mirrors GeoSentinel-Ingress/src/db_manager.rs)
 ├── event.rs               # Shared ConnectionEvent / Source / Severity
+├── home.rs                # Public-IP detection for the home marker
 ├── geo/
 │   ├── mod.rs
 │   └── lookup.rs          # GeoInfo + GeoLookup (LRU cache over DatabaseManager)
@@ -285,6 +415,7 @@ src/
 └── ui/
     ├── mod.rs
     ├── app.rs             # Shared state: dots, counters, throughput, focus
+    ├── gui.rs             # Native egui/eframe window
     ├── layout.rs          # Grid layout for the dashboard
     ├── map_renderer.rs    # image::RgbaImage buffer + lat/lon projection
     └── panels.rs          # Map / log / metrics widget renderers
@@ -322,10 +453,11 @@ is essentially free.
 
 ### DBs won't download
 
-Your firewall is blocking `www.ip2location.com`. Either:
+Your firewall is blocking `www.ip2location.com`, or you have not set
+a download token. You can:
 
-- Export `GEOTOP_DOWNLOAD_TOKEN=<your-token>` to use IP2Location's
-  authenticated download endpoint, or
+- Sign up for a free token at <https://www.ip2location.com/free/download?file=DB11LITEBIN>
+  and provide it via `GEOTOP_DOWNLOAD_TOKEN` or `--download-token`, or
 - Download the BINs from another machine and pass `--db-path` /
   `--proxy-db-path` explicitly, or
 - Run with `--no-proxy` if you don't care about the proxy / VPN /
@@ -342,7 +474,6 @@ that, restart `geotop` (`q` and re-launch).
 
 ## Roadmap
 
-- [ ] Mouse-driven map zoom/pan
 - [ ] Tofu-style country heatmap aggregate view
 
 ---

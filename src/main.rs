@@ -6,14 +6,17 @@
 //! own threads (pnet and notify aren't async-friendly) and bridge
 //! into the UI via an `mpsc::UnboundedSender<ConnectionEvent>`.
 
+mod config;
 mod db_downloader;
 mod event;
 mod geo;
+mod home;
 mod ingest;
 mod ui;
 
 use std::io::stdout;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,6 +27,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use image::RgbaImage;
+use parking_lot::RwLock;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Margin;
 use ratatui::Terminal;
@@ -36,15 +40,16 @@ use eframe::egui;
 use ratatui_image::picker::Picker;
 use ratatui_image::Resize;
 
-use crate::db_downloader::{DbConfig, LOCATION_DB_NAME, PROXY_DB_NAME, DatabaseManager};
+use crate::config::Config;
+use crate::db_downloader::{DatabaseManager, DbConfig, LOCATION_DB_NAME, PROXY_DB_NAME};
 use crate::event::ConnectionEvent;
 use crate::geo::lookup::GeoLookup;
 use crate::ingest::pcap_sniffer;
 use crate::ui::app::{AppState, Panel};
 use crate::ui::gui::GuiApp;
+use crate::ui::layout::dashboard;
 use crate::ui::map_renderer::{HomeLocation, MapRenderer};
 use crate::ui::panels;
-use crate::ui::layout::dashboard;
 
 /// geotop – htop-style real-time network & log monitor.
 #[derive(Parser, Debug)]
@@ -53,6 +58,10 @@ struct Cli {
     /// Subcommand.
     #[command(subcommand)]
     command: Option<Command>,
+
+    /// Path to a JSON config file.  Defaults to `~/.config/geotop/config.json`.
+    #[arg(short = 'C', long, value_name = "PATH")]
+    config: Option<PathBuf>,
 
     /// Network interface(s) to sniff (e.g. `eth0`, `en0`).
     /// Repeat the flag for multiple interfaces, or use `--all-interfaces`.
@@ -80,10 +89,6 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     proxy_db_path: Option<PathBuf>,
 
-    /// Path to a dark-mode equirectangular world map (PNG/JPEG/SVG).
-    #[arg(long, value_name = "PATH")]
-    map_path: Option<PathBuf>,
-
     /// Disable the world map (text-only dashboard).
     #[arg(long)]
     no_map: bool,
@@ -99,6 +104,11 @@ struct Cli {
     /// Disable proxy / VPN / datacenter classification.
     #[arg(long)]
     no_proxy: bool,
+
+    /// IP2Location LITE download token.  Falls back to the
+    /// `GEOTOP_DOWNLOAD_TOKEN` environment variable if not supplied.
+    #[arg(long, value_name = "TOKEN", env = "GEOTOP_DOWNLOAD_TOKEN")]
+    download_token: Option<String>,
 
     /// Verbose logging (`-v`, `-vv`, …).
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
@@ -122,10 +132,7 @@ fn main() -> Result<()> {
     if let Some(Command::ListIfaces) = &cli.command {
         println!("Available interfaces:");
         for (iface, addrs) in pcap_sniffer::list_interfaces() {
-            let addr_list: Vec<String> = addrs
-                .iter()
-                .map(|a| a.ip().to_string())
-                .collect();
+            let addr_list: Vec<String> = addrs.iter().map(|a| a.ip().to_string()).collect();
             let addr_str = if addr_list.is_empty() {
                 String::new()
             } else {
@@ -155,9 +162,45 @@ fn main() -> Result<()> {
     }
 
     rt.block_on(async {
+        // ---------- load config ------------------------------------------------
+        let (cfg, cfg_path) = Config::load(cli.config.as_deref()).context("loading config")?;
+        let cfg = std::sync::Arc::new(RwLock::new((*cfg).clone()));
+        if let Some(p) = cfg_path.clone() {
+            let _watcher =
+                Config::spawn_watcher(p, cfg.clone()).context("spawning config watcher")?;
+            // `_watcher` is kept alive for the lifetime of this async block.
+        }
+
         // ---------- resolve DBs ------------------------------------------------
         let db_dir = default_db_dir(&cli)?;
-        let token = std::env::var("GEOTOP_DOWNLOAD_TOKEN").unwrap_or_default();
+        let token = cli
+            .download_token
+            .clone()
+            .unwrap_or_else(|| std::env::var("GEOTOP_DOWNLOAD_TOKEN").unwrap_or_default());
+
+        // Without a token the IP2Location LITE CDN returns an error. If the
+        // user has not pre-staged DBs, open the signup page and explain how
+        // to provide the token.
+        if token.is_empty() && cli.db_path.is_none() && cli.db_dir.is_none() {
+            let db_exists = tokio::fs::metadata(db_dir.join(LOCATION_DB_NAME)).await.is_ok();
+            if !db_exists {
+                eprintln!("╔════════════════════════════════════════════════════════════════════╗");
+                eprintln!("║  IP2Location download token required                               ║");
+                eprintln!("╠════════════════════════════════════════════════════════════════════╣");
+                eprintln!("║  geotop needs a free IP2Location LITE token to download the        ║");
+                eprintln!("║  geolocation database. Opening the signup page in your browser…    ║");
+                eprintln!("╚════════════════════════════════════════════════════════════════════╝");
+                let _ = webbrowser::open("https://www.ip2location.com/free/download?file=DB11LITEBIN");
+                anyhow::bail!(
+                    "no GEOTOP_DOWNLOAD_TOKEN set.\n\
+                    \n\
+                    1. Sign up for a free token at https://www.ip2location.com/free/download?file=DB11LITEBIN\n\
+                    2. Export it in your shell: export GEOTOP_DOWNLOAD_TOKEN=<your-token>\n\
+                    3. Or stage the .BIN files manually with --db-path / --proxy-db-path\n\
+                    4. Re-run geotop\n"
+                );
+            }
+        }
 
         let mut db_cfg = DbConfig {
             data_dir: db_dir,
@@ -170,7 +213,10 @@ fn main() -> Result<()> {
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| LOCATION_DB_NAME.into());
-            db_cfg.data_dir = p.parent().map(|d| d.to_path_buf()).unwrap_or(db_cfg.data_dir);
+            db_cfg.data_dir = p
+                .parent()
+                .map(|d| d.to_path_buf())
+                .unwrap_or(db_cfg.data_dir);
         }
         if let Some(p) = &cli.proxy_db_path {
             db_cfg.proxy_db = p
@@ -203,41 +249,83 @@ fn main() -> Result<()> {
 
         let geo = GeoLookup::new(db_mgr.clone());
 
+        // ---------- home location ----------------------------------------------
+        // The "home" marker is the local machine.  By default we detect the
+        // public IP and geolocate it; the user can override with --home or
+        // map.home.lat/lon in the config.
+        let home = if let Some(explicit) = parse_home(&cli.home) {
+            info!(lat = explicit.lat, lon = explicit.lon, "using explicit --home coordinates");
+            explicit
+        } else {
+            let fallback = cfg.read().home_location();
+            let detected = home::detect(&geo.clone(), fallback.clone()).await;
+            if detected.ip.is_some() {
+                info!(
+                    ip = ?detected.ip,
+                    lat = detected.lat,
+                    lon = detected.lon,
+                    label = detected.label.as_deref().unwrap_or("?"),
+                    "using detected public IP home location"
+                );
+            } else {
+                info!(lat = detected.lat, lon = detected.lon, "falling back to configured home location");
+            }
+            detected
+        };
+
         // ---------- ui dispatch ------------------------------------------------
-        let home = parse_home(&cli.home).unwrap_or(HomeLocation { lat: 39.0, lon: -77.0 }); // DC-ish default
         if cli.gui {
-            return run_gui(cli, db_mgr, geo, home).await;
+            return run_gui(cli, db_mgr, geo, home, cfg).await;
         }
-        run_tui(cli, db_mgr, geo, home).await
+        run_tui(cli, db_mgr, geo, home, cfg).await
     })
 }
 
 /// Setup ingestion workers and run the native GUI window on the main thread.
-async fn run_gui(cli: Cli, db_mgr: Arc<DatabaseManager>, geo: Arc<GeoLookup>, home: HomeLocation) -> Result<()> {
+async fn run_gui(
+    cli: Cli,
+    _db_mgr: Arc<DatabaseManager>,
+    geo: Arc<GeoLookup>,
+    home: HomeLocation,
+    cfg: Arc<RwLock<Config>>,
+) -> Result<()> {
     let (tx, rx) = mpsc::unbounded_channel::<ConnectionEvent>();
     let cancel_handles = spawn_ingest_workers(&cli, tx).await?;
 
-    let renderer = if cli.no_map {
-        MapRenderer::load(None)?
-    } else {
-        MapRenderer::load(cli.map_path.as_deref())?
+    let (win_w, win_h, min_w, min_h) = {
+        let c = cfg.read();
+        (
+            c.window.width as f32,
+            c.window.height as f32,
+            c.window.min_width as f32,
+            c.window.min_height as f32,
+        )
     };
-    let app = GuiApp::new(rx, geo, renderer, home);
+
+    let renderer = if cli.no_map {
+        None
+    } else {
+        Some(MapRenderer::load(cfg.clone())?)
+    };
+    let app = GuiApp::new(rx, geo, renderer, home, cfg.clone());
 
     // eframe::run_native must run on the main thread (winit requirement).
     // The async runtime is dropped after this returns, which also drops the
     // ingestion worker tasks. Build options without the non-Send hooks.
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size(egui::vec2(1280.0, 720.0))
-            .with_min_inner_size(egui::vec2(640.0, 360.0)),
+            .with_inner_size(egui::vec2(win_w, win_h))
+            .with_min_inner_size(egui::vec2(min_w, min_h)),
         ..Default::default()
     };
 
     let result = eframe::run_native(
         "geotop",
         options,
-        Box::new(|_cc| Ok(Box::new(app))),
+        Box::new(move |cc| {
+            crate::ui::gui::apply_egui_style(&cc.egui_ctx, &cfg.read());
+            Ok(Box::new(app))
+        }),
     );
     let result = result.map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
 
@@ -255,21 +343,22 @@ async fn run_tui(
     _db_mgr: Arc<DatabaseManager>,
     geo: Arc<GeoLookup>,
     home: HomeLocation,
+    cfg: Arc<RwLock<Config>>,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<ConnectionEvent>();
     let handles = spawn_ingest_workers(&cli, tx).await?;
 
     let renderer = if !cli.no_map {
-        Some(MapRenderer::load(cli.map_path.as_deref())?)
+        Some(MapRenderer::load(cfg.clone())?)
     } else {
         None
     };
 
-    let state = Arc::new(AppState::new(geo.clone()));
+    let state = Arc::new(AppState::new(geo.clone(), cfg.clone()));
     let mut terminal = setup_terminal()?;
 
     // Pick the highest graphics protocol the terminal supports.
-    let picker = if crossterm::tty::IsTty::is_tty(&std::io::stdin()) {
+    let mut picker = if crossterm::tty::IsTty::is_tty(&std::io::stdin()) {
         Picker::from_query_stdio().unwrap_or_else(|e| {
             warn!("terminal query failed ({e:?}), falling back to halfblocks");
             Picker::halfblocks()
@@ -280,6 +369,19 @@ async fn run_tui(
     };
     info!("graphics protocol: {:?}", picker.protocol_type());
     info!("font size: {:?}", picker.font_size());
+    info!("run with --gui to open a native window instead of the terminal UI");
+
+    // Apply optional manual font size from config.
+    {
+        let c = cfg.read();
+        if let (Some(w), Some(h)) = (c.fonts.tui_font_width, c.fonts.tui_font_height) {
+            #[allow(deprecated)]
+            {
+                picker = Picker::from_fontsize((w, h).into());
+            }
+            info!(width = w, height = h, "using configured TUI font size");
+        }
+    }
 
     let picker = if picker.font_size().width <= picker.font_size().height {
         warn!("reported font aspect looks non-square/tall, ignoring queried font size");
@@ -307,28 +409,41 @@ async fn run_tui(
         let map_img: Option<RgbaImage> = renderer.as_ref().map(|r| {
             let dots = state.dots.lock();
             let snapshot: Vec<_> = dots.iter().cloned().collect();
+            let lines_enabled = state.connection_lines.load(Ordering::Relaxed);
             drop(dots);
-            r.redraw(&snapshot, home)
+            r.redraw(&snapshot, &home, lines_enabled, None)
         });
 
         terminal.draw(|f| {
-            let areas = dashboard(f.area());
+            let no_map = renderer.is_none();
+            let areas = dashboard(f.area(), no_map);
 
-            let dyn_img: Option<image::DynamicImage> =
-                map_img.clone().map(image::DynamicImage::ImageRgba8);
             let inner = areas.map.inner(Margin::new(1, 1));
-            let size = ratatui::layout::Size::new(inner.width.max(1), inner.height.max(1));
-            let proto = dyn_img
-                .as_ref()
-                .and_then(|img| picker.new_protocol(img.clone(), size, Resize::Fit(None)).ok());
-            if let Some(p) = proto {
-                map_protocol = p;
-            } else {
-                warn!("failed to encode map for size {size:?}, reusing previous frame");
+            if !no_map {
+                let dyn_img: Option<image::DynamicImage> =
+                    map_img.clone().map(image::DynamicImage::ImageRgba8);
+                let size = ratatui::layout::Size::new(inner.width.max(1), inner.height.max(1));
+                let proto = dyn_img
+                    .as_ref()
+                    .and_then(|img| picker.new_protocol(img.clone(), size, Resize::Fit(None)).ok())
+                    .or_else(|| {
+                        // If the terminal's preferred protocol cannot encode the
+                        // marked-up map, fall back to halfblocks so markers are
+                        // still visible instead of reusing a stale/blank frame.
+                        dyn_img.as_ref().and_then(|img| {
+                            Picker::halfblocks()
+                                .new_protocol(img.clone(), size, Resize::Fit(None))
+                                .ok()
+                        })
+                    });
+                if let Some(p) = proto {
+                    map_protocol = p;
+                } else {
+                    warn!("failed to encode map for size {size:?}, reusing previous frame");
+                }
             }
 
-            let display_img = map_img.clone().unwrap_or_else(blank_map_image);
-            panels::render(f, &state, areas, display_img, &map_protocol, inner);
+            panels::render(f, &state, areas, &map_protocol, inner, cfg.clone(), &home, no_map);
         })?;
 
         // 4) input.
@@ -399,6 +514,8 @@ fn parse_home(s: &Option<String>) -> Option<HomeLocation> {
     Some(HomeLocation {
         lat: lat.trim().parse().ok()?,
         lon: lon.trim().parse().ok()?,
+        ip: None,
+        label: None,
     })
 }
 
@@ -411,6 +528,10 @@ fn handle_event(state: std::sync::Arc<AppState>, ev: &Event) -> Result<()> {
             KeyCode::Char('q') | KeyCode::Esc => state.quit(),
             KeyCode::Char('p') => state.toggle_pause(),
             KeyCode::Char('c') => state.request_clear(),
+            KeyCode::Char('l') => {
+                let prev = state.connection_lines.load(Ordering::Relaxed);
+                state.connection_lines.store(!prev, Ordering::Relaxed);
+            }
             KeyCode::Tab => state.cycle_focus(),
             KeyCode::Char('1') => state.set_focus(Panel::Map),
             KeyCode::Char('2') => state.set_focus(Panel::Log),
@@ -431,6 +552,7 @@ fn init_logging(verbosity: u8) {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
+        .with_ansi(false)
         .with_writer(std::io::stderr)
         .init();
 }

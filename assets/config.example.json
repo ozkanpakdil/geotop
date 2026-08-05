@@ -1,0 +1,47 @@
+{
+  "marker_ttl_seconds": 8,
+  "max_markers": 5000,
+  "marker_style": "ring",
+  "marker_size": 8,
+  "map": {
+    "home": {
+      "lat": 39.0,
+      "lon": -77.0,
+      "marker_style": "ring",
+      "marker_size": 14
+    },
+    "labels": {
+      "show_country_labels": true,
+      "show_city_labels": true,
+      "city_label_zoom": 2.5
+    }
+  },
+  "colors": {
+    "info": "#50DC78",
+    "warn": "#FAC832",
+    "alert": "#F03C3C",
+    "focus": "#00FFFF",
+    "dim": "#555555",
+    "home": "#3CB4FF",
+    "ocean": "#0A121E",
+    "land": "#233E5F"
+  },
+  "fonts": {
+    "tui_font_width": null,
+    "tui_font_height": null,
+    "gui_body": 14.0,
+    "gui_heading": 20.0,
+    "gui_font_file": null
+  },
+  "connection_lines": {
+    "enabled": false,
+    "color": "#00FF41",
+    "glow_size": 2
+  },
+  "window": {
+    "width": 1280,
+    "height": 720,
+    "min_width": 640,
+    "min_height": 360
+  }
+}

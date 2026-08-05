@@ -132,11 +132,19 @@ fn parse_frame(frame: &[u8]) -> Option<ConnectionEvent> {
     let (protocol, dst_port, severity) = match eth.get_ethertype() {
         pnet::packet::ethernet::EtherTypes::Ipv4 => {
             let v4 = Ipv4Packet::new(eth.payload())?;
-            tcp_udp_info(IpNextHeaderProtocols::Tcp, v4.get_next_level_protocol(), v4.payload())
+            tcp_udp_info(
+                IpNextHeaderProtocols::Tcp,
+                v4.get_next_level_protocol(),
+                v4.payload(),
+            )
         }
         pnet::packet::ethernet::EtherTypes::Ipv6 => {
             let v6 = Ipv6Packet::new(eth.payload())?;
-            tcp_udp_info(IpNextHeaderProtocols::Tcp, v6.get_next_header(), v6.payload())
+            tcp_udp_info(
+                IpNextHeaderProtocols::Tcp,
+                v6.get_next_header(),
+                v6.payload(),
+            )
         }
         _ => return None,
     };
@@ -169,8 +177,8 @@ fn tcp_udp_info(
             if let Some(tcp) = TcpPacket::new(payload) {
                 let dst = tcp.get_destination();
                 let sev = match dst {
-                    22 | 3389 | 5900 => Severity::Warn,   // common admin ports
-                    23 | 445 | 1433 => Severity::Alert,    // telnet / smb / mssql
+                    22 | 3389 | 5900 => Severity::Warn, // common admin ports
+                    23 | 445 | 1433 => Severity::Alert, // telnet / smb / mssql
                     _ => Severity::Info,
                 };
                 ("TCP".to_string(), Some(dst), sev)
@@ -180,7 +188,11 @@ fn tcp_udp_info(
         }
         IpNextHeaderProtocols::Udp => {
             if let Some(udp) = UdpPacket::new(payload) {
-                ("UDP".to_string(), Some(udp.get_destination()), Severity::Info)
+                (
+                    "UDP".to_string(),
+                    Some(udp.get_destination()),
+                    Severity::Info,
+                )
             } else {
                 ("UDP".to_string(), None, Severity::Info)
             }

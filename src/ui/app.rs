@@ -7,20 +7,17 @@ use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use ratatui::widgets::ListState;
 use serde::Serialize;
 
-use crate::event::{ConnectionEvent, Severity};
+use crate::config::Config;
+use crate::event::{is_plottable_ip, ConnectionEvent, Severity};
 use crate::geo::lookup::{GeoInfo, GeoLookup};
-
-/// Maximum number of dots retained on the map at any one time.
-/// Older dots are evicted to keep the buffer bounded.
-const MAX_DOTS: usize = 5_000;
 
 /// Cap on scrollback lines in the live log panel.
 const MAX_LOG_ROWS: usize = 2_000;
@@ -83,12 +80,16 @@ pub struct AppState {
     pub stats: Mutex<Stats>,
     /// Geo lookup handle.
     pub geo: Arc<GeoLookup>,
+    /// Shared configuration; may be hot-reloaded.
+    pub config: Arc<RwLock<Config>>,
     /// Selected panel (Tab cycles).
     pub focused: Mutex<Panel>,
     /// When true, ingestion continues but the map is frozen.
     pub paused: AtomicBool,
     /// When true, all dots are wiped on the next tick.
     pub clear_requested: AtomicBool,
+    /// Toggle for Matrix-style connection lines from the home marker.
+    pub connection_lines: AtomicBool,
     /// Rolling 1-second packet ring for the throughput sparkline.
     pub throughput_ring: Mutex<VecDeque<u64>>,
     /// Spinner / lifecycle flag – set to `true` to exit the main loop.
@@ -98,17 +99,20 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(geo: Arc<GeoLookup>) -> Self {
+    pub fn new(geo: Arc<GeoLookup>, config: Arc<RwLock<Config>>) -> Self {
+        let max_markers = config.read().max_markers;
         Self {
-            dots: Mutex::new(VecDeque::with_capacity(MAX_DOTS)),
+            dots: Mutex::new(VecDeque::with_capacity(max_markers)),
             log: Mutex::new(VecDeque::with_capacity(MAX_LOG_ROWS)),
             per_ip: DashMap::new(),
             per_country: DashMap::new(),
             stats: Mutex::new(Stats::default()),
             geo,
+            config,
             focused: Mutex::new(Panel::Map),
             paused: AtomicBool::new(false),
             clear_requested: AtomicBool::new(false),
+            connection_lines: AtomicBool::new(false),
             throughput_ring: Mutex::new(VecDeque::with_capacity(120)),
             should_quit: AtomicBool::new(false),
             log_state: Mutex::new(ListState::default()),
@@ -153,8 +157,12 @@ impl AppState {
             self.dots.lock().clear();
         }
 
-        // 2. expire old dots (>8 s)
-        let ttl = Duration::from_secs(8);
+        // 2. expire old dots
+        let cfg = self.config.read();
+        let ttl = cfg.marker_ttl();
+        let max_markers = cfg.max_markers;
+        drop(cfg);
+
         let now = Instant::now();
         let mut dots = self.dots.lock();
         while let Some(front) = dots.front() {
@@ -163,6 +171,9 @@ impl AppState {
             } else {
                 break;
             }
+        }
+        while dots.len() > max_markers {
+            dots.pop_front();
         }
 
         // 3. throughput ring (1-second bins, keep 120 entries)
@@ -209,7 +220,7 @@ impl AppState {
         };
 
         if let Some(info) = self.geo.lookup(ev.src_ip) {
-            if plot {
+            if plot && is_plottable_ip(ev.src_ip) {
                 self.plot(&info, escalated, &ev);
             }
             let key = info
@@ -267,8 +278,9 @@ impl AppState {
 
     fn plot(&self, info: &GeoInfo, severity: Severity, ev: &ConnectionEvent) {
         if let (Some(lat), Some(lon)) = (info.latitude, info.longitude) {
+            let max_markers = self.config.read().max_markers;
             let mut dots = self.dots.lock();
-            if dots.len() >= MAX_DOTS {
+            if dots.len() >= max_markers {
                 dots.pop_front();
             }
             dots.push_back(MapDot {
@@ -322,9 +334,20 @@ impl LogRow {
     #[allow(dead_code)]
     pub fn fmt_line(&self) -> String {
         let proxy = self.proxy.map(|p| p.label()).unwrap_or("    ");
-        let city = if self.city.is_empty() { "—" } else { &self.city };
-        let cc = if self.country.is_empty() { "—" } else { &self.country };
-        let status = self.http_status.map(|s| format!("{s}")).unwrap_or_else(|| "   ".into());
+        let city = if self.city.is_empty() {
+            "—"
+        } else {
+            &self.city
+        };
+        let cc = if self.country.is_empty() {
+            "—"
+        } else {
+            &self.country
+        };
+        let status = self
+            .http_status
+            .map(|s| format!("{s}"))
+            .unwrap_or_else(|| "   ".into());
         let path = self
             .http_path
             .as_deref()

@@ -124,22 +124,14 @@ impl DatabaseManager {
 
         let geo_path = self.cfg.geo_path();
         if self.needs_refresh(&geo_path).await? {
-            self.download_and_extract(
-                &self.cfg.geo_url,
-                &geo_path,
-                &self.cfg.geo_db,
-            )
-            .await?;
+            self.download_and_extract(&self.cfg.geo_url, &geo_path, &self.cfg.geo_db)
+                .await?;
         }
 
         let proxy_path = self.cfg.proxy_path();
         if self.cfg.proxy_enabled && self.needs_refresh(&proxy_path).await? {
-            self.download_and_extract(
-                &self.cfg.proxy_url,
-                &proxy_path,
-                &self.cfg.proxy_db,
-            )
-            .await?;
+            self.download_and_extract(&self.cfg.proxy_url, &proxy_path, &self.cfg.proxy_db)
+                .await?;
         }
 
         self.load_geo(&geo_path).await?;
@@ -157,20 +149,13 @@ impl DatabaseManager {
     /// has changed on disk since the last load.
     pub async fn hot_reload(self: &Arc<Self>) -> Result<()> {
         let geo_path = self.cfg.geo_path();
-        if self
-            .file_changed(&geo_path, &self.geo_mtime)
-            .await?
-        {
+        if self.file_changed(&geo_path, &self.geo_mtime).await? {
             info!(path = %geo_path.display(), "geo database changed; reloading");
             self.load_geo(&geo_path).await?;
         }
 
         let proxy_path = self.cfg.proxy_path();
-        if self.cfg.proxy_enabled
-            && self
-                .file_changed(&proxy_path, &self.proxy_mtime)
-                .await?
-        {
+        if self.cfg.proxy_enabled && self.file_changed(&proxy_path, &self.proxy_mtime).await? {
             info!(path = %proxy_path.display(), "proxy database changed; reloading");
             self.load_proxy(&proxy_path).await?;
         }
