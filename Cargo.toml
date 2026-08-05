@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/yourname/geotop"
 readme = "README.md"
 keywords = ["network", "monitor", "tui", "geolocation", "ratatui"]
-categories = ["network", "command-line-utilities", "visualization"]
+categories = ["network-programming", "command-line-utilities", "visualization", "gui"]
 
 [dependencies]
 # TUI
