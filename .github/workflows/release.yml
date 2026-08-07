@@ -140,9 +140,134 @@ jobs:
           path: ${{ matrix.archive }}
           if-no-files-found: error
 
+  # ---------------------------------------------------------------------------
+  # macOS universal2 build — Apple-signed + notarized
+  # ---------------------------------------------------------------------------
+  # Merges the arm64 and x86_64 Mach-Os from the `build` job into one universal
+  # binary, signs it with a Developer ID Application certificate, and submits
+  # it to Apple's notarization service. The result ships as a single
+  # `geotop-darwin-universal.tar.gz` asset so Mac users never have to pick an
+  # architecture, and so the direct download opens without the Gatekeeper
+  # "unidentified developer" warning.
+  #
+  # This job always runs to completion (it no-ops when the signing secrets are
+  # absent) so that the `release` job — which depends on it — is never blocked
+  # by a skipped dependency. Without the secrets the per-arch macOS tarballs
+  # from `build` still ship, just unsigned.
+  #
+  # Required GitHub secrets (add under Settings → Secrets → Actions):
+  #   APPLE_DEVELOPER_ID_CERT_P12          base64 of the Developer ID
+  #                                       Application .p12 (key + cert)
+  #   APPLE_DEVELOPER_ID_CERT_P12_PASSWORD  password for that .p12
+  #   APPLE_DEVELOPER_ID_NAME              e.g.
+  #                                       "Developer ID Application: Ozkan Pakdil (TEAMID)"
+  #   APPLE_API_KEY                        base64 of the App Store Connect
+  #                                       API key .p8 (App Manager role)
+  #   APPLE_API_KEY_ID                     the key ID (e.g. ABCD123456)
+  #   APPLE_API_ISSUER                     the issuer UUID
+  notarize-macos:
+    name: macOS universal2 (signed + notarized)
+    needs: build
+    runs-on: macos-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    env:
+      # Job-level env so we can detect presence without injecting the value
+      # into a script body (kept empty if the secret is unset).
+      APPLE_DEVELOPER_ID_CERT_P12: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
+    steps:
+      - name: Detect signing secrets
+        run: |
+          if [ -n "$APPLE_DEVELOPER_ID_CERT_P12" ]; then
+            echo "HAS_SECRETS=true" >> "$GITHUB_ENV"
+            echo "::notice::Apple signing secrets present — will build, sign & notarize the universal macOS binary."
+          else
+            echo "HAS_SECRETS=false" >> "$GITHUB_ENV"
+            echo "::notice::Apple signing secrets not configured — skipping notarization. Per-arch macOS tarballs still ship unsigned. See release.yml for the required secrets."
+          fi
+
+      - name: Download aarch64 binary
+        if: env.HAS_SECRETS == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: geotop-aarch64-apple-darwin.tar.gz
+
+      - name: Download x86_64 binary
+        if: env.HAS_SECRETS == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: geotop-x86_64-apple-darwin.tar.gz
+
+      - name: Create universal2 binary
+        if: env.HAS_SECRETS == 'true'
+        run: |
+          mkdir -p arm64 x86
+          tar -xzf geotop-aarch64-apple-darwin.tar.gz -C arm64
+          tar -xzf geotop-x86_64-apple-darwin.tar.gz   -C x86
+          lipo -create -output geotop arm64/geotop x86/geotop
+          echo "Universal binary arches:"
+          lipo -info geotop
+
+      - name: Import Developer ID certificate
+        if: env.HAS_SECRETS == 'true'
+        env:
+          APPLE_DEVELOPER_ID_CERT_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          KC_PW="$(uuidgen)"
+          security create-keychain -p "$KC_PW" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "$KC_PW" "$KEYCHAIN"
+          echo "$APPLE_DEVELOPER_ID_CERT_P12" | base64 -d > cert.p12
+          security import cert.p12 -k "$KEYCHAIN" -P "$APPLE_DEVELOPER_ID_CERT_P12_PASSWORD" -T /usr/bin/codesign
+          # Let codesign access the imported key without a GUI prompt.
+          security set-partition-list -S apple-tool:,apple: -s "$KC_PW" "$KEYCHAIN"
+          echo "KC_PW=$KC_PW" >> "$GITHUB_ENV"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Codesign (hardened runtime)
+        if: env.HAS_SECRETS == 'true'
+        env:
+          APPLE_DEVELOPER_ID_NAME: ${{ secrets.APPLE_DEVELOPER_ID_NAME }}
+        run: |
+          codesign --force --options runtime --keychain "$KEYCHAIN" \
+            --sign "$APPLE_DEVELOPER_ID_NAME" geotop
+          echo "Signature verification:"
+          codesign --verify --verbose=4 geotop
+
+      - name: Notarize
+        if: env.HAS_SECRETS == 'true'
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          echo "$APPLE_API_KEY" | base64 -d > AuthKey.p8
+          # notarytool accepts a zip containing a single Mach-O command-line tool.
+          ditto -c -k --keepParent geotop geotop-universal.zip
+          xcrun notarytool submit geotop-universal.zip \
+            --key AuthKey.p8 \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+
+      - name: Package universal tarball
+        if: env.HAS_SECRETS == 'true'
+        run: |
+          tar -czf geotop-darwin-universal.tar.gz geotop
+          echo "sha256 for the Homebrew cask:"
+          shasum -a 256 geotop-darwin-universal.tar.gz
+
+      - name: Upload universal artifact
+        if: env.HAS_SECRETS == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: geotop-darwin-universal.tar.gz
+          path: geotop-darwin-universal.tar.gz
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, notarize-macos]
     runs-on: ubuntu-latest
     # Only create a release for actual tag pushes; skip for manual runs.
     if: startsWith(github.ref, 'refs/tags/')
@@ -174,6 +299,46 @@ jobs:
 
       - name: List artifacts
         run: ls -R artifacts
+
+      # Print the sha256 of the notarized universal asset. The next step bumps
+      # the in-repo cask automatically; this print also lets anyone update the
+      # cask by hand if needed.
+      - name: Print macOS universal sha256 (for the Homebrew cask)
+        run: |
+          if [ -f artifacts/geotop-darwin-universal.tar.gz ]; then
+            echo "geotop-darwin-universal.tar.gz sha256:"
+            shasum -a 256 artifacts/geotop-darwin-universal.tar.gz
+          else
+            echo "No universal macOS asset (notarization skipped — signing secrets not configured)."
+          fi
+
+      # Bump version + sha256 in the in-repo cask (Casks/geotop.rb) and commit
+      # straight to the default branch with the default GITHUB_TOKEN — no
+      # second repository, no PAT. No-ops if there is no notarized universal
+      # asset (signing secrets not configured).
+      - name: Bump Homebrew cask (in-repo)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ ! -f artifacts/geotop-darwin-universal.tar.gz ]; then
+            echo "No universal asset to publish to the cask; skipping bump."
+            exit 0
+          fi
+          SHA="$(shasum -a 256 artifacts/geotop-darwin-universal.tar.gz | awk '{print $1}')"
+          VERSION="${GITHUB_REF_NAME#v}"
+          # The checkout for this job is at the tag (detached HEAD); switch to
+          # the default branch so the cask bump lands there, not on the tag.
+          git fetch origin "$DEFAULT_BRANCH"
+          git checkout -B "$DEFAULT_BRANCH" "origin/$DEFAULT_BRANCH"
+          sed -i.bak -E "s/^  version \".*\"/  version \"${VERSION}\"/" Casks/geotop.rb
+          sed -i.bak -E "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/"       Casks/geotop.rb
+          rm -f Casks/geotop.rb.bak
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/geotop.rb
+          git commit -m "chore(brew): geotop ${VERSION} (sha256 ${SHA})"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}" "$DEFAULT_BRANCH"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
