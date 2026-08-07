@@ -68,22 +68,15 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config \
-            libfontconfig1-dev \
-            libpcap-dev \
-            libx11-dev libx11-xcb-dev \
-            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxcb-randr0-dev libxcb-cursor-dev libxcb-util-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev \
-            libwayland-dev wayland-protocols \
-            libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \
-            libdbus-1-dev
-          # - libfontconfig1-dev : resvg "system-fonts" feature
-          # - libpcap-dev        : pnet raw datalink channel
-          # - the rest            : eframe/wgpu/winit GUI stack (X11 + Wayland
-          #                        + XKB backends) — needed to link the binary
-          #                        even though the GUI isn't exercised in CI.
+          sudo apt-get install -y pkg-config libpcap-dev libwayland-dev
+          # Only these are FFI-linked at build time:
+          #   libpcap-dev    -> pnet (raw datalink channel)
+          #   libwayland-dev -> wayland-sys (winit Wayland backend)
+          #   pkg-config     -> wayland-sys build script locates libwayland
+          # The rest of the GUI stack needs nothing at link time:
+          #   - winit's X11 backend uses the pure-Rust `x11rb` crate (no libxcb)
+          #   - `x11-dl` and `xkbcommon-dl` dlopen their libs at *runtime*
+          #   - resvg/fontdb use the pure-Rust `fontconfig-parser` (no libfontconfig FFI)
 
       - name: Install Npcap SDK (Windows)
         if: runner.os == 'Windows'
