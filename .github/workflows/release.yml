@@ -1,0 +1,182 @@
+name: Release
+
+# Build geotop for macOS, Linux and Windows on every version tag (v*) and
+# attach the stripped release binaries to a GitHub Release.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: # allow manual runs from the Actions tab
+
+permissions:
+  contents: write # needed to create the release and upload assets
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }} / ${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: geotop
+            archive: geotop-x86_64-unknown-linux-gnu.tar.gz
+          # macOS (Intel)
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact: geotop
+            archive: geotop-x86_64-apple-darwin.tar.gz
+          # macOS (Apple Silicon)
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: geotop
+            archive: geotop-aarch64-apple-darwin.tar.gz
+          # Windows
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: geotop.exe
+            archive: geotop-x86_64-pc-windows-msvc.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # --- Native dependencies -------------------------------------------------
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # libfontconfig1-dev: needed by resvg's "system-fonts" feature
+          # libpcap-dev: needed by pnet on Linux
+          sudo apt-get install -y libfontconfig1-dev libpcap-dev
+
+      - name: Install Npcap SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # pnet requires the Npcap SDK headers/libs to build on Windows.
+          $sdk = "$env:GITHUB_WORKSPACE\npcap-sdk"
+          $url = "https://npcap.com/dist/npcap-sdk-1.13.zip"
+          Invoke-WebRequest -Uri $url -OutFile sdk.zip
+          Expand-Archive -Path sdk.zip -DestinationPath $sdk -Force
+          # The SDK ships x64 libs under Lib/x64 and headers under Include.
+          echo "LIB=$sdk\Lib\x64;$env:LIB" >> $env:GITHUB_ENV
+          echo "INCLUDE=$sdk\Include;$env:INCLUDE" >> $env:GITHUB_ENV
+
+      # --- Build --------------------------------------------------------------
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Strip binary (Unix)
+        if: runner.os != 'Windows'
+        run: strip target/${{ matrix.target }}/release/${{ matrix.artifact }}
+
+      # NOTE: the map GeoJSON is embedded into the binary at compile time via
+      # `include_bytes!` in map_renderer.rs, so the release binary is fully
+      # self-contained — no external assets need to be shipped alongside it.
+      - name: Prepare artifacts (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact }} staging/
+          tar -czf ${{ matrix.archive }} -C staging .
+
+      - name: Prepare artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force staging | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/${{ matrix.artifact }} staging/
+          Compress-Archive -Path staging/* -DestinationPath ${{ matrix.archive }}
+
+      # Sanity check: confirm the embedded GeoJSON is actually inside the binary,
+      # so a crates.io / release install never silently falls back to the
+      # procedural map due to a missing asset.
+      - name: Verify map is embedded in binary (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          bin="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
+          # The bundled GeoJSON starts with a GeoJSON FeatureCollection marker.
+          if grep -aq '"type":"FeatureCollection"\|"type": "FeatureCollection"' "$bin"; then
+            echo "OK: embedded GeoJSON found in binary"
+          else
+            echo "ERROR: GeoJSON marker not found in binary — map may not be bundled!"
+            exit 1
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only create a release for actual tag pushes; skip for manual runs.
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -R artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*
+
+  publish-crate:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Verify the package builds & the embedded assets are present before publishing.
+      - name: Cargo package sanity check
+        run: cargo package --no-verify
+
+      - name: Verify bundled assets are in the package
+        run: |
+          tar -tzf target/package/*.crate | grep -q 'assets/natural-earth-110m-land.geojson' \
+            || { echo "GeoJSON missing from published crate!"; exit 1; }
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --no-verify
