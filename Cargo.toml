@@ -21,7 +21,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 # SVG rasterization for bundled/default world map
 resvg = { version = "0.48", default-features = false, features = ["text", "system-fonts"] }
 # GUI mode
-eframe = { version = "0.35", default-features = false, features = ["default_fonts", "wgpu"] }
+eframe = { version = "0.35", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland"] }
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 # CLI
