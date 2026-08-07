@@ -149,6 +149,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        # git-cliff needs the full tag history to compute the range between
+        # the previous release tag and the one being cut.
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Generate release notes
+        id: git-cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          # Only the section for the tag being released (prev tag..this tag),
+          # with the changelog header stripped so it is a clean release body.
+          args: --latest --strip header
+        env:
+          GITHUB_REPO: ${{ github.repository }}
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
@@ -162,7 +178,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body: ${{ steps.git-cliff.outputs.content }}
           files: artifacts/*
 
   publish-crate:
