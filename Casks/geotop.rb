@@ -7,10 +7,13 @@
 #
 # Users install with:
 #   brew tap ozkanpakdil/geotop https://github.com/ozkanpakdil/geotop
+#   brew trust ozkanpakdil/geotop
 #   brew install --cask geotop
 #
 # The explicit tap URL is needed because brew's shorthand `ozkanpakdil/geotop`
-# resolves to a `homebrew-geotop` repo by convention, not this one.
+# resolves to a `homebrew-geotop` repo by convention, not this one. The
+# `brew trust` step is required by current Homebrew, which refuses to load
+# casks from non-official taps until they are explicitly trusted.
 #
 # The cask installs the prebuilt, Apple-signed + notarized universal2 Mach-O
 # (arm64 + x86_64) onto PATH, so there is no Gatekeeper "unidentified

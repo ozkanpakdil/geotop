@@ -83,7 +83,7 @@ panel is the live connection log.
 
 | Platform | How |
 |---|---|
-| **macOS** (recommended) | `brew tap ozkanpakdil/geotop https://github.com/ozkanpakdil/geotop` then `brew install --cask geotop` — prebuilt, Apple-signed & notarized universal2 binary, no Gatekeeper prompt |
+| **macOS** (recommended) | `brew tap ozkanpakdil/geotop https://github.com/ozkanpakdil/geotop` → `brew trust ozkanpakdil/geotop` → `brew install --cask geotop` — prebuilt, Apple-signed & notarized universal2 binary, no Gatekeeper prompt |
 | macOS (direct download) | Grab `geotop-darwin-universal.tar.gz` from the [latest release](https://github.com/ozkanpakdil/geotop/releases), extract, then strip quarantine (see below) |
 | Linux | Grab `geotop-x86_64-unknown-linux-gnu.tar.gz` from the [latest release](https://github.com/ozkanpakdil/geotop/releases), extract, put `geotop` on your `PATH` |
 | Windows | Grab `geotop-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/ozkanpakdil/geotop/releases), extract, put `geotop.exe` on your `PATH` |
@@ -97,7 +97,7 @@ panel is the live connection log.
 ### macOS: "cannot be opened because it is from an unidentified developer"
 
 The prebuilt macOS binary is **Apple-signed and notarized**, so a clean
-`brew tap ozkanpakdil/geotop https://github.com/ozkanpakdil/geotop && brew install --cask geotop` runs with no warning. If you
+`brew tap ozkanpakdil/geotop https://github.com/ozkanpakdil/geotop && brew trust ozkanpakdil/geotop && brew install --cask geotop` runs with no warning. If you
 downloaded the tarball straight from a browser instead, macOS attaches a
 quarantine flag. Strip it once after extracting and the binary runs:
 
