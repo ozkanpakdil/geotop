@@ -82,7 +82,7 @@ panel is the live connection log.
 
 ```bash
 # 1. install
-git clone https://github.com/yourname/geotop
+git clone https://github.com/ozkanpakdil/geotop
 cd geotop
 cargo install --path .
 
