@@ -11,7 +11,7 @@ native GUI window with `--gui`.
 
 https://crates.io/crates/geotop
 
-![geotop GUI dashboard](assets/geotop-gui.jpg)
+![geotop GUI dashboard](https://raw.githubusercontent.com/ozkanpakdil/geotop/main/assets/geotop-gui.jpg)
 
 > Native GUI mode (`--gui`) showing the live world map, top-talkers bar
 > chart, throughput sparkline and the live connection log.
@@ -65,7 +65,7 @@ https://crates.io/crates/geotop
 
 ### Terminal UI (`--gui` omitted)
 
-![geotop TUI dashboard](assets/geotop-tui.png)
+![geotop TUI dashboard](https://raw.githubusercontent.com/ozkanpakdil/geotop/main/assets/geotop-tui.png)
 
 The terminal dashboard renders the world map with half-block fallback
 so it works in any terminal. The right-hand panel shows top talkers,
@@ -74,7 +74,7 @@ panel is the live connection log.
 
 ### CLI help
 
-![geotop --help](assets/geotop-help.png)
+![geotop --help](https://raw.githubusercontent.com/ozkanpakdil/geotop/main/assets/geotop-help.png)
 
 ---
 
@@ -250,7 +250,7 @@ for the canonical, always-up-to-date reference.  Key groups:
 `-C, --config <PATH>` to point at a different file.  All fields are optional
 and fall back to the same defaults used before configuration existed.
 
-A documented example ships at [`assets/config.example.json`](assets/config.example.json):
+A documented example ships at [`assets/config.example.json`](https://github.com/ozkanpakdil/geotop/blob/main/assets/config.example.json):
 
 ```bash
 cp assets/config.example.json ~/.config/geotop/config.json
@@ -395,6 +395,56 @@ Requirements:
   `pnet`'s raw datalink channel. Not needed if you only use `-f`.
 - The IP2LOCATION-LITE-DB11.BIN file (auto-downloaded with a token, or pre-staged
   with `--db-path` / `--download-token`).
+
+---
+
+## Releasing
+
+Releases are cut with [`cargo-release`](https://crates.io/crates/cargo-release),
+which bumps the version in `Cargo.toml`/`Cargo.lock`, commits, and tags in one
+step — far less error-prone than hand-editing the manifest and `git tag`. The
+behaviour is pinned in [`release.toml`](https://github.com/ozkanpakdil/geotop/blob/main/release.toml): tags use a `v` prefix
+(so `0.1.1` becomes tag `v0.1.1`, which triggers the GA release) and
+`cargo publish` is disabled (the GitHub Actions `publish-crate` job handles
+crates.io instead).
+
+```bash
+# one-time install
+cargo install cargo-release
+
+# bump 0.1.0 -> 0.1.1, update Cargo.lock, commit, and create the v0.1.1 tag
+cargo release 0.1.1 --execute
+
+# push the version commit + tag (this triggers the GitHub Actions release)
+git push origin main
+git push origin v0.1.1
+```
+
+`cargo release 0.1.1` defaults to a dry run; `--execute` makes it actually
+commit and tag. It will refuse if `0.1.1` is not greater than the current
+`Cargo.toml` version.
+
+What the GitHub Actions release (`.github/workflows/release.yml`) does on a
+pushed `v*` tag:
+
+- Builds stripped release binaries for Linux (`x86_64`), macOS (`x86_64` and
+  `aarch64`), and Windows (`x86_64`).
+- Verifies the bundled world-map GeoJSON is embedded in each binary.
+- Creates a GitHub Release with auto-generated notes and the binaries attached.
+- Publishes the crate to crates.io (requires the `CARGO_REGISTRY_TOKEN`
+  repository secret).
+
+### Build version string
+
+A `build.rs` sets the `BUILD_VERSION` compile-time env var to `git describe
+--tags --always --dirty` when available, falling back to the `Cargo.toml`
+version otherwise. So:
+
+- a **tagged** build reports `geotop v0.1.1`
+- an **untagged dev** build reports something like `geotop be7a4ce-dirty`
+
+`geotop --version` uses this string; `Cargo.toml`'s `version` remains the
+authoritative crate version that `cargo-release` bumps.
 
 ---
 

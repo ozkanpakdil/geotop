@@ -53,7 +53,7 @@ use crate::ui::panels;
 
 /// geotop – htop-style real-time network & log monitor.
 #[derive(Parser, Debug)]
-#[command(name = "geotop", version, about, long_about = None)]
+#[command(name = "geotop", version = env!("BUILD_VERSION"), about, long_about = None)]
 struct Cli {
     /// Subcommand.
     #[command(subcommand)]

@@ -1,0 +1,21 @@
+# cargo-release configuration — see https://github.com/crate-ci/cargo-release
+#
+# Usage:
+#   cargo release 0.1.1 --execute   # bump version, commit, create tag
+#   git push origin main            # push the version commit
+#   git push origin v0.1.1          # push the tag (triggers the GA release)
+
+# Tag releases as `v0.1.1` (matches the `v*` trigger in .github/workflows/release.yml).
+tag-prefix = "v"
+
+# Don't `cargo publish` from here — the GitHub Actions `publish-crate` job
+# publishes to crates.io after the cross-platform binaries are built, so the
+# crate only goes live once the release actually succeeds.
+publish = false
+
+# Don't auto-push; push the commit + tag explicitly so the GA release is
+# triggered deliberately, not as a side effect of `cargo release`.
+push = false
+
+# Only allow cutting releases from main.
+allow-branch = ["main"]
