@@ -28,16 +28,20 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: geotop
             archive: geotop-x86_64-unknown-linux-gnu.tar.gz
-          # macOS (Intel)
-          - os: macos-13
-            target: x86_64-apple-darwin
-            artifact: geotop
-            archive: geotop-x86_64-apple-darwin.tar.gz
-          # macOS (Apple Silicon)
+          # macOS (Apple Silicon) — native build
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: geotop
             archive: geotop-aarch64-apple-darwin.tar.gz
+          # macOS (Intel) — cross-compiled from an Apple Silicon runner.
+          # GitHub retired the macos-13 (Intel) runner image; there is no newer
+          # Intel macOS runner. macOS toolchains + system frameworks are
+          # universal, so x86_64-apple-darwin cross-compiles cleanly on arm64
+          # with no C cross-toolchain required.
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: geotop
+            archive: geotop-x86_64-apple-darwin.tar.gz
           # Windows
           - os: windows-latest
             target: x86_64-pc-windows-msvc
