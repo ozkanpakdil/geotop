@@ -304,6 +304,7 @@ cp assets/config.example.json ~/.geotop/config.json
 | Top-level | `marker_style` | Marker shape: `dot`, `ring`, `cross`, or `x`. Default `ring`. |
 | Top-level | `marker_size` | Marker radius / arm length in pixels (1–20). Default `8`. |
 | Top-level | `download_token` | IP2Location LITE download token, persisted here automatically the first time you supply it via `--download-token` or `GEOTOP_DOWNLOAD_TOKEN`, so you don't have to re-pass it on every run (especially under `sudo`, which strips env vars). Editable by hand. |
+| Top-level | `gui_max_fps` | Cap on the GUI's idle-animation frame rate. The map animation (arc growth, dot fade, home pulse) is driven at this rate; user interaction (zoom/pan/hover) still repaints at full speed. Lowering it reduces CPU/GPU use and the per-frame texture upload. `0` = uncapped (vsync). Default `60`. Hot-reloadable. |
 | `map.home` | `marker_style`, `marker_size` | Home marker shape/size. Default size `14`. |
 | `map.labels` | `show_country_labels` | Show country names on the map (GUI). |
 | `map.labels` | `show_city_labels` | Show city names next to markers when zoomed in (GUI). |

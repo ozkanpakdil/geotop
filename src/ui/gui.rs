@@ -12,7 +12,6 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use eframe::egui;
-use image::RgbaImage;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -242,7 +241,6 @@ pub struct GuiApp {
     home: HomeLocation,
     config: Arc<RwLock<Config>>,
     map_texture: Option<egui::TextureHandle>,
-    last_map: Option<RgbaImage>,
     /// Last config whose fonts / window size were applied; used for hot-reload.
     last_applied_config: Config,
     /// Current map zoom (1.0 = full world).
@@ -275,7 +273,6 @@ impl GuiApp {
             home,
             config,
             map_texture: None,
-            last_map: None,
             last_applied_config: initial_config,
             map_zoom: 1.0,
             map_pan: egui::Vec2::ZERO,
@@ -430,6 +427,9 @@ impl GuiApp {
         rect: egui::Rect,
     ) -> Option<egui::TextureHandle> {
         let renderer = self.map_renderer.as_ref()?;
+        // `redraw` only consumes lat/lon/severity/created_at — the country/city
+        // strings (drawn as labels by the GUI overlay, not the renderer) are
+        // left empty to avoid cloning a String per dot per frame.
         let dots: Vec<MapDot> = {
             let state = self.state.lock();
             state
@@ -438,8 +438,8 @@ impl GuiApp {
                 .map(|d| MapDot {
                     lat: d.lat,
                     lon: d.lon,
-                    country: d.country.clone(),
-                    city: d.city.clone(),
+                    country: String::new(),
+                    city: String::new(),
                     severity: d.severity,
                     src_ip: d.src_ip,
                     proxy: d.proxy,
@@ -451,7 +451,6 @@ impl GuiApp {
         let lines_enabled = self.state.lock().connection_lines.load(Ordering::Relaxed);
         let viewport = self.current_viewport(rect.size(), rect);
         let img = renderer.redraw(&dots, &self.home, lines_enabled, viewport);
-        self.last_map = Some(img.clone());
 
         let size = [img.width() as usize, img.height() as usize];
         let pixels = img.into_raw();
@@ -514,8 +513,24 @@ impl eframe::App for GuiApp {
         // only repaints on user interaction (mouse move/hover), which made the
         // connection-arc "grow" animation freeze whenever the window was idle.
         // When paused or empty we let it sleep to avoid burning CPU.
+        //
+        // The idle animation rate is capped by `gui_max_fps` (config,
+        // hot-reloadable): each frame schedules the next repaint that many
+        // milliseconds out instead of asking for one immediately.  User
+        // interaction (zoom/pan/hover) still repaints at full speed — the cap
+        // only bounds the self-driven animation ticks, halving the per-frame
+        // 8 MB texture upload / draw cost at 30 fps vs uncapped vsync.  A value
+        // of 0 means uncapped (immediate request_repaint, vsync-bounded).
         if !paused && active_dots > 0 {
-            ui.ctx().request_repaint();
+            let max_fps = cfg.gui_max_fps;
+            if max_fps == 0 {
+                ui.ctx().request_repaint();
+            } else {
+                // 1000 / fps, floored to 1 ms so a huge fps can't request a
+                // 0-duration repaint (which egui treats as immediate anyway).
+                let delay = std::time::Duration::from_millis((1000 / max_fps as u64).max(1));
+                ui.ctx().request_repaint_after(delay);
+            }
         }
 
         egui::Panel::top("status").show(ui, |ui: &mut egui::Ui| {

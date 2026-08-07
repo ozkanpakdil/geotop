@@ -106,7 +106,7 @@ impl HomeLocation {
 /// Viewport for zoomed/panned map rendering.  When `None`, the full world is
 /// drawn.  `zoom = 1.0` is full world; larger values zoom in.  The center
 /// lat/lon stays anchored in the middle of the output image.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Viewport {
     pub zoom: f64,
     pub center_lat: f64,
@@ -187,6 +187,21 @@ pub struct MapRenderer {
     config: Arc<RwLock<Config>>,
     /// Country labels extracted from the SVG map (empty for raster-only maps).
     country_labels: Vec<MapLabel>,
+    /// Cached base map (coastlines + ocean) for the current viewport.  Only the
+    /// dots / arcs / home-pulse animate each frame, so re-rasterizing the world
+    /// polygons on every tick is wasted work — this is the main GUI cost when
+    /// zoomed in.  Invalidated when the viewport, output size or ocean color
+    /// changes (the latter so config hot-reload of `colors.ocean` still applies).
+    cached_base: Mutex<Option<CachedBase>>,
+}
+
+/// Cached rasterized base layer, keyed by viewport + size + ocean fill color.
+struct CachedBase {
+    viewport: Viewport,
+    w: u32,
+    h: u32,
+    fill: [u8; 4],
+    image: RgbaImage,
 }
 
 /// Load the bundled Natural Earth GeoJSON land polygons and build a
@@ -262,6 +277,7 @@ impl MapRenderer {
                         last_tick: Mutex::new(Instant::now()),
                         config,
                         country_labels: Vec::new(),
+                        cached_base: Mutex::new(None),
                     }));
                 }
             }
@@ -277,6 +293,7 @@ impl MapRenderer {
             last_tick: Mutex::new(Instant::now()),
             config,
             country_labels,
+            cached_base: Mutex::new(None),
         }))
     }
 
@@ -294,16 +311,39 @@ impl MapRenderer {
         let ttl = cfg.marker_ttl();
         let vp = viewport.unwrap_or_else(Viewport::full_world);
 
-        // Refresh base layer into the working buffer, applying the viewport.
-        // For SVG sources we re-rasterize the vector map at the viewport's
-        // native resolution so zooming stays crisp instead of upscaling a cache.
         let mut work = self.work.lock();
-        render_base_viewport(
-            &self.source,
-            &mut work,
-            &vp,
-            &colors.ocean.to_rgba(255),
-        );
+        let w = work.width();
+        let h = work.height();
+        let ocean_fill = colors.ocean.to_rgba(255);
+
+        // The base map (coastlines + ocean) only changes when the viewport,
+        // output size or ocean fill color changes — not on every animation
+        // tick.  Cache it so we avoid re-rasterizing the world polygons every
+        // frame (the dominant GUI cost when zoomed in).  Each frame we just
+        // blit the cached base into the working buffer, then draw the animated
+        // dots / arcs / home-pulse on top.
+        {
+            let mut cache = self.cached_base.lock();
+            let stale = match cache.as_ref() {
+                None => true,
+                Some(c) => c.viewport != vp || c.w != w || c.h != h || c.fill != ocean_fill.0,
+            };
+            if stale {
+                let mut base_img = RgbaImage::new(w, h);
+                render_base_viewport(&self.source, &mut base_img, &vp, &ocean_fill);
+                *cache = Some(CachedBase {
+                    viewport: vp,
+                    w,
+                    h,
+                    fill: ocean_fill.0,
+                    image: base_img,
+                });
+            }
+            let base = &cache.as_ref().expect("base layer just ensured").image;
+            // Same dimensions as `work` by construction; blit is a fast memcpy
+            // that reuses the working buffer's allocation (no re-rasterize).
+            work.copy_from_slice(base);
+        }
 
         // Compute pulse advance
         let mut pulse = self.pulse.lock();
@@ -314,9 +354,6 @@ impl MapRenderer {
         let pulse_value = *pulse;
         drop(last);
         drop(pulse);
-
-        let w = work.width();
-        let h = work.height();
 
         // Home pixel is used for both the marker and connection lines.
         let (hx, hy) = vp.latlon_to_pixel(home_dot.lat, home_dot.lon, w, h);
@@ -330,19 +367,23 @@ impl MapRenderer {
             let base_color = cfg.connection_lines.color;
             let glow = cfg.connection_lines.glow_size as i32;
             for d in dots {
-                if !vp.contains(d.lat, d.lon, w, h) {
-                    continue;
-                }
                 let age = now.duration_since(d.created_at).as_secs_f64();
                 let alpha = 1.0 - (age / ttl_secs).clamp(0.0, 1.0);
                 if alpha <= 0.0 {
+                    continue;
+                }
+                let (px, py) = vp.latlon_to_pixel(d.lat, d.lon, w, h);
+                // Keep the arc only if some part of it is on-screen.  We do NOT
+                // cull on the target alone — an arc to an off-screen node is
+                // still partly visible when you zoom in near home, and the
+                // per-pixel clip in plot_line_collect truncates it to bounds.
+                if !arc_intersects_viewport(hx, hy, px, py, w, h) {
                     continue;
                 }
                 // Fade the arc with its dot, and animate it growing from home
                 // toward the node over the first LINE_DRAW_SECS of its life.
                 let line_color = base_color.to_rgba((alpha * 220.0) as u8);
                 let progress = line_draw_progress(age);
-                let (px, py) = vp.latlon_to_pixel(d.lat, d.lon, w, h);
                 draw_connection_line(&mut work, hx, hy, px, py, line_color, glow, progress);
             }
         }
@@ -1578,6 +1619,29 @@ fn arc_control_point(x0: f32, y0: f32, x1: f32, y1: f32) -> (f32, f32) {
     (mx + perp_x * mag * sign, my + perp_y * mag * sign)
 }
 
+/// Cheap visibility test for a connection arc.  A quadratic Bézier stays
+/// within the convex hull of its three control points (home, target, and the
+/// bowed control point from [`arc_control_point`]), so if the axis-aligned
+/// bounding box of those three points does not intersect the viewport, no
+/// pixel of the arc would be written anyway and we can skip it for speed.
+///
+/// Crucially this still draws the *visible portion* of an arc whose far
+/// endpoint is off-screen (e.g. you zoomed in near home and the target node
+/// scrolled out of view) — the per-pixel clip in [`plot_line_collect`] then
+/// truncates the arc to the image bounds.
+fn arc_intersects_viewport(x0: i32, y0: i32, x1: i32, y1: i32, w: u32, h: u32) -> bool {
+    let (fx0, fy0) = (x0 as f32, y0 as f32);
+    let (fx1, fy1) = (x1 as f32, y1 as f32);
+    let (cx, cy) = arc_control_point(fx0, fy0, fx1, fy1);
+    let min_x = fx0.min(fx1).min(cx);
+    let max_x = fx0.max(fx1).max(cx);
+    let min_y = fy0.min(fy1).min(cy);
+    let max_y = fy0.max(fy1).max(cy);
+    let (wf, hf) = (w as f32, h as f32);
+    // Bounding box overlaps [0, w) × [0, h).
+    max_x >= 0.0 && min_x < wf && max_y >= 0.0 && min_y < hf
+}
+
 /// Bresenham line that both plots the core pixel and records the coordinate
 /// so a thin glow can be applied afterwards in a single pass.
 fn plot_line_collect(
@@ -1880,6 +1944,97 @@ mod tests {
             "connection lines should leave >= 3 green pixels, got {}",
             green_pixels
         );
+    }
+
+    /// An arc whose *target* node is scrolled off-screen by zooming must still
+    /// paint its visible portion near home — the old code culled the whole arc
+    /// as soon as the target left the viewport.  Regression guard for the
+    /// `arc_intersects_viewport` bounding-box test in `redraw`.
+    #[test]
+    fn connection_lines_drawn_when_target_offscreen() {
+        use crate::config::{Config, MarkerStyle};
+        use parking_lot::RwLock;
+        use std::net::IpAddr;
+        use std::time::Instant;
+
+        let mut cfg = Config::default();
+        cfg.marker_style = MarkerStyle::Dot;
+        cfg.marker_size = 2;
+        cfg.connection_lines.color = crate::config::ColorDef::from_rgb(0x00, 0xFF, 0x00);
+        cfg.connection_lines.glow_size = 2;
+        let cfg = Arc::new(RwLock::new(cfg));
+        let renderer = MapRenderer::load(cfg).unwrap();
+        let created = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap();
+        // London is well north of the zoomed viewport below (lat 51.5 vs a
+        // visible band of ±9°), so the target node is off-screen while home
+        // (0°N, 0°E) stays centered and visible.
+        let dot = MapDot {
+            lat: 51.5,
+            lon: -0.1,
+            country: "UK".into(),
+            city: "London".into(),
+            severity: crate::event::Severity::Info,
+            src_ip: "1.2.3.4".parse::<IpAddr>().unwrap(),
+            proxy: None,
+            created_at: created,
+        };
+        let home = HomeLocation {
+            lat: 0.0,
+            lon: 0.0,
+            ip: None,
+            label: None,
+        };
+        let vp = Viewport {
+            zoom: 10.0,
+            center_lat: 0.0,
+            center_lon: 0.0,
+        };
+        // Sanity: the target really is off-screen in this viewport.
+        let w = DEFAULT_MAP_W;
+        let h = DEFAULT_MAP_H;
+        assert!(
+            !vp.contains(dot.lat, dot.lon, w, h),
+            "test precondition: target should be off-screen"
+        );
+        assert!(
+            vp.contains(home.lat, home.lon, w, h),
+            "test precondition: home should be on-screen"
+        );
+
+        let off = renderer.redraw(&[dot.clone()], &home, false, Some(vp));
+        let on = renderer.redraw(&[dot], &home, true, Some(vp));
+
+        // Enabling lines must still add green pixels even though the target
+        // is off-screen — the visible stub of the arc near home is drawn.
+        let mut green_pixels = 0;
+        for y in 0..on.height() {
+            for x in 0..on.width() {
+                let p = on.get_pixel(x, y);
+                let q = off.get_pixel(x, y);
+                if p.0[1] >= 200 && p.0[0] < 50 && p.0[2] < 50 && p != q {
+                    green_pixels += 1;
+                }
+            }
+        }
+        assert!(
+            green_pixels >= 3,
+            "off-screen target arc should still paint >= 3 green pixels near home, got {}",
+            green_pixels
+        );
+    }
+
+    /// Direct unit test for the arc visibility helper.
+    #[test]
+    fn arc_intersects_viewport_bounds_cases() {
+        // Home on-screen, target far off the right edge → still intersects.
+        assert!(arc_intersects_viewport(100, 100, 5_000, 100, 256, 256));
+        // Both endpoints off-screen on the same side, arc bows further left
+        // (control point left of them) → does not intersect.
+        assert!(!arc_intersects_viewport(-500, 100, -300, 100, 256, 256));
+        // Both endpoints off-screen on opposite sides → the arc crosses → intersects.
+        assert!(arc_intersects_viewport(-300, 100, 600, 100, 256, 256));
     }
 
     /// The bundled vector map must expose a reasonable set of country labels.

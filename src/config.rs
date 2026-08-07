@@ -82,6 +82,15 @@ const DEFAULT_CONNECTION_LINES_ENABLED: bool = true;
 /// Default connection line glow radius in pixels.
 const DEFAULT_CONNECTION_LINE_GLOW: u8 = 1;
 
+/// Default cap on the GUI idle-animation frame rate (fps).  30 keeps the map
+/// animation smooth while halving the per-frame texture upload / draw cost
+/// versus an uncapped vsync rate.  `0` in config means uncapped.
+const DEFAULT_GUI_MAX_FPS: u16 = 60;
+
+fn default_gui_max_fps() -> u16 {
+    DEFAULT_GUI_MAX_FPS
+}
+
 /// Top-level configuration.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Config {
@@ -129,6 +138,15 @@ pub struct Config {
     /// back here automatically.
     #[serde(default)]
     pub download_token: String,
+
+    /// Cap on the GUI's idle animation frame rate (frames per second).  The
+    /// map animation (arc growth, dot fade, home pulse) is driven by
+    /// `request_repaint_after`; user interaction (zoom/pan/hover) still
+    /// repaints immediately at full speed.  Lowering this reduces CPU/GPU
+    /// and the per-frame 8 MB texture upload.  `0` = uncapped (vsync).
+    /// Hot-reloadable.
+    #[serde(default = "default_gui_max_fps")]
+    pub gui_max_fps: u16,
 }
 
 impl Default for Config {
@@ -144,6 +162,7 @@ impl Default for Config {
             fonts: FontConfig::default(),
             window: WindowConfig::default(),
             download_token: String::new(),
+            gui_max_fps: default_gui_max_fps(),
         }
     }
 }

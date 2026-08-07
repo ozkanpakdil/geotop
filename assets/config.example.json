@@ -4,6 +4,7 @@
   "marker_style": "ring",
   "marker_size": 8,
   "download_token": "",
+  "gui_max_fps": 30,
   "map": {
     "home": {
       "lat": 39.0,
