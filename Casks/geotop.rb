@@ -17,8 +17,8 @@
 # developer" prompt and no need to choose an architecture.
 
 cask "geotop" do
-  version "0.1.4"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  version "0.1.6"
+  sha256 "0359fd6f9056ecf4f4e15778286941d34c29eaaddedb2ad7f400023f84c984c2"
 
   url "https://github.com/ozkanpakdil/geotop/releases/download/v#{version}/geotop-darwin-universal.tar.gz"
   name "geotop"
