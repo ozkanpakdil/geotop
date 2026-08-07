@@ -6,7 +6,9 @@
 #   git push origin v0.1.1          # push the tag (triggers the GA release)
 
 # Tag releases as `v0.1.1` (matches the `v*` trigger in .github/workflows/release.yml).
-tag-prefix = "v"
+# cargo-release's default tag template is `{{prefix}}v{{version}}`, which already
+# includes the `v`, so we leave tag-prefix at its default (empty) rather than
+# setting `tag-prefix = "v"` — that produced `vv0.1.1`.
 
 # Don't `cargo publish` from here — the GitHub Actions `publish-crate` job
 # publishes to crates.io after the cross-platform binaries are built, so the
