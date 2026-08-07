@@ -350,6 +350,18 @@ fn render_footer(
             ),
             Style::default().fg(color_dim),
         ),
+        Span::styled("[m]", Style::default().fg(color_focus)),
+        Span::styled(
+            format!(
+                " map:{} ",
+                if state.map_hidden.load(Ordering::Relaxed) {
+                    "off"
+                } else {
+                    "on"
+                }
+            ),
+            Style::default().fg(color_dim),
+        ),
         Span::styled("[q/Esc]", Style::default().fg(color_focus)),
         Span::styled(" quit  ", Style::default().fg(color_dim)),
         Span::styled(" │ ", Style::default().fg(color_dim)),
@@ -360,7 +372,7 @@ fn render_footer(
     ];
     if paused {
         spans.insert(
-            9,
+            11,
             Span::styled(
                 " ⏸ PAUSED ",
                 Style::default()

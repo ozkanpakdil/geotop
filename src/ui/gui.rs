@@ -253,6 +253,9 @@ pub struct GuiApp {
     drag_start_pan: Option<egui::Vec2>,
     /// Pointer position at the start of an active drag.
     drag_start_pos: Option<egui::Pos2>,
+    /// Runtime map visibility toggle ([m] key).  When `true` the central panel
+    /// shows the full connection log instead of the map (mirrors `--no-map`).
+    map_hidden: bool,
 }
 
 impl GuiApp {
@@ -278,6 +281,7 @@ impl GuiApp {
             map_pan: egui::Vec2::ZERO,
             drag_start_pan: None,
             drag_start_pos: None,
+            map_hidden: false,
         }
     }
 
@@ -337,6 +341,12 @@ impl GuiApp {
         self.map_renderer.is_none()
     }
 
+    /// Whether the map is currently drawn in the central panel: a renderer
+    /// exists and the user hasn't hidden it with the `m` key.
+    fn map_visible(&self) -> bool {
+        !self.no_map() && !self.map_hidden
+    }
+
     fn render_full_log(&self,
         ui: &mut egui::Ui,
         colors: &crate::config::ColorConfig,
@@ -355,7 +365,11 @@ impl GuiApp {
             ui.heading("Live Connections");
         });
         ui.separator();
-        self.render_log_rows(ui, colors, 6);
+        // Scale the number of visible rows with the strip's height so a taller
+        // panel shows more connections instead of dead space.  ~18px per row.
+        let avail = ui.available_height().max(0.0);
+        let limit = ((avail / 18.0).ceil() as usize).clamp(3, MAX_LOG_ROWS);
+        self.render_log_rows(ui, colors, limit);
     }
 
     fn render_log_rows(&self,
@@ -518,16 +532,22 @@ impl eframe::App for GuiApp {
                 ui.with_layout(
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui: &mut egui::Ui| {
-                        ui.label("[p] pause  [c] clear  [l] lines  [q/Esc] quit");
+                        ui.label("[p] pause  [c] clear  [l] lines  [m] map  [q/Esc] quit");
                     },
                 );
             });
         });
 
         // --- Right-side metrics panel ---
+        // Resizable: drag the vertical splitter between this panel and the map
+        // to widen / narrow.  Clamped so the map stays usable.
+        let screen = ui.available_rect_before_wrap();
+        let right_max = (screen.width() * 0.55).max(280.0);
         egui::Panel::right("metrics")
-            .resizable(false)
+            .resizable(true)
             .default_size(240.0)
+            .min_size(160.0)
+            .max_size(right_max)
             .show(ui, |ui: &mut egui::Ui| {
                 ui.heading("Top Talkers");
                 ui.separator();
@@ -575,18 +595,24 @@ impl eframe::App for GuiApp {
             });
 
         // --- Bottom log strip (only when the map is shown) ---
-        if !self.no_map() {
+        // Resizable: drag the horizontal splitter between this strip and the
+        // map to grow / shrink its height.  Clamped so it can't swallow the map.
+        if self.map_visible() {
+            let log_max = (screen.height() * 0.65).max(200.0);
             egui::Panel::bottom("log")
-                .resizable(false)
+                .resizable(true)
                 .default_size(180.0)
+                .min_size(80.0)
+                .max_size(log_max)
                 .show(ui, |ui: &mut egui::Ui| {
                     self.render_log_strip(ui, &colors);
                 });
         }
 
-        // --- Central content: map or full log when --no-map is set ---
+        // --- Central content: map, or full log when the map is unavailable
+        // (--no-map) or hidden via the `m` key ---
         egui::CentralPanel::default().show(ui, |ui: &mut egui::Ui| {
-            if self.no_map() {
+            if !self.map_visible() {
                 self.render_full_log(ui, &colors);
                 return;
             }
@@ -889,8 +915,13 @@ impl eframe::App for GuiApp {
                 let prev = state.connection_lines.load(Ordering::Relaxed);
                 state.connection_lines.store(!prev, Ordering::Relaxed);
             }
+            // Toggle map visibility: hide → show the full connection log,
+            // show → restore the map.
+            if i.key_pressed(egui::Key::M) {
+                self.map_hidden = !self.map_hidden;
+            }
             // Map zoom and reset (only meaningful when map is shown).
-            if !self.no_map() {
+            if self.map_visible() {
                 if i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals) {
                     self.map_zoom = (self.map_zoom * 1.2).clamp(1.0, 10.0);
                 }

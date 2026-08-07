@@ -27,7 +27,10 @@ tokio = { version = "1", features = ["full"] }
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
 # IP / Packet handling
-pnet = { version = "0.34", features = ["serde"] }
+# 0.35 pulls pnet_datalink 0.35, which fixes a misaligned-pointer panic in the
+# macOS BPF read loop (0.34 read bpf_hdr from a 14-byte offset → UB-check
+# abort under `--all-interfaces` on utun/ethernet in debug builds).
+pnet = { version = "0.35", features = ["serde"] }
 # IP geolocation (kept in sync with `GeoSentinel-Ingress` 0.1)
 ip2location = "0.6"
 # Open the user's browser to the IP2Location token signup page when no token is set

@@ -415,7 +415,9 @@ async fn run_tui(
         });
 
         terminal.draw(|f| {
-            let no_map = renderer.is_none();
+            // Map is absent when there is no renderer (–no-map) or the user
+            // hid it at runtime with the `m` key.
+            let no_map = renderer.is_none() || state.map_hidden.load(Ordering::Relaxed);
             let areas = dashboard(f.area(), no_map);
 
             let inner = areas.map.inner(Margin::new(1, 1));
@@ -531,6 +533,10 @@ fn handle_event(state: std::sync::Arc<AppState>, ev: &Event) -> Result<()> {
             KeyCode::Char('l') => {
                 let prev = state.connection_lines.load(Ordering::Relaxed);
                 state.connection_lines.store(!prev, Ordering::Relaxed);
+            }
+            KeyCode::Char('m') => {
+                let prev = state.map_hidden.load(Ordering::Relaxed);
+                state.map_hidden.store(!prev, Ordering::Relaxed);
             }
             KeyCode::Tab => state.cycle_focus(),
             KeyCode::Char('1') => state.set_focus(Panel::Map),

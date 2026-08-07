@@ -90,6 +90,9 @@ pub struct AppState {
     pub clear_requested: AtomicBool,
     /// Toggle for Matrix-style connection lines from the home marker.
     pub connection_lines: AtomicBool,
+    /// Runtime map visibility toggle ([m] key).  When true the map panel is
+    /// dropped and the log panel fills the main column.
+    pub map_hidden: AtomicBool,
     /// Rolling 1-second packet ring for the throughput sparkline.
     pub throughput_ring: Mutex<VecDeque<u64>>,
     /// Spinner / lifecycle flag – set to `true` to exit the main loop.
@@ -114,6 +117,7 @@ impl AppState {
             paused: AtomicBool::new(false),
             clear_requested: AtomicBool::new(false),
             connection_lines: AtomicBool::new(lines_on),
+            map_hidden: AtomicBool::new(false),
             throughput_ring: Mutex::new(VecDeque::with_capacity(120)),
             should_quit: AtomicBool::new(false),
             log_state: Mutex::new(ListState::default()),
