@@ -220,7 +220,9 @@ jobs:
           echo "$APPLE_DEVELOPER_ID_CERT_P12" | base64 -d > cert.p12
           security import cert.p12 -k "$KEYCHAIN" -P "$APPLE_DEVELOPER_ID_CERT_P12_PASSWORD" -T /usr/bin/codesign
           # Let codesign access the imported key without a GUI prompt.
-          security set-partition-list -S apple-tool:,apple: -s "$KC_PW" "$KEYCHAIN"
+          #   -s  only touch keys that can sign (the codesigning key)
+          #   -k  keychain password
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PW" "$KEYCHAIN"
           echo "KC_PW=$KC_PW" >> "$GITHUB_ENV"
           echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
 
@@ -230,6 +232,7 @@ jobs:
           APPLE_DEVELOPER_ID_NAME: ${{ secrets.APPLE_DEVELOPER_ID_NAME }}
         run: |
           codesign --force --options runtime --keychain "$KEYCHAIN" \
+            --identifier "com.ozkanpakdil.geotop" \
             --sign "$APPLE_DEVELOPER_ID_NAME" geotop
           echo "Signature verification:"
           codesign --verify --verbose=4 geotop
@@ -370,4 +373,16 @@ jobs:
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --no-verify
+        run: |
+          set +e
+          cargo publish --no-verify > /tmp/publish.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/publish.log
+          if [ $status -eq 0 ]; then
+            echo "published"
+          elif grep -q "already exists" /tmp/publish.log; then
+            echo "::notice::crate version already on crates.io; skipping publish"
+          else
+            exit 1
+          fi
