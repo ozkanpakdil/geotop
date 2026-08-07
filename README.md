@@ -9,6 +9,8 @@ Run it in your terminal with `ratatui` + `ratatui-image`
 (Kitty Graphics Protocol → Sixel → half-block fallback), or open a
 native GUI window with `--gui`.
 
+https://crates.io/crates/geotop
+
 ![geotop GUI dashboard](assets/geotop-gui.jpg)
 
 > Native GUI mode (`--gui`) showing the live world map, top-talkers bar
