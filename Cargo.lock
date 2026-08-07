@@ -1615,6 +1615,7 @@ dependencies = [
  "tracing-subscriber",
  "webbrowser",
  "zip",
+ "zune-core",
 ]
 
 [[package]]

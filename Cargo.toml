@@ -18,6 +18,13 @@ ratatui-image = { version = "11", default-features = false, features = ["crosste
 crossterm = { version = "0.28", features = ["event-stream"] }
 # image crate (for in-memory map manipulation)
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Transitive pin: `image` pulls `zune-jpeg` -> `zune-core`.  zune-core 0.5.2
+# rewrote its `__warn` logging macro in a way that makes zune-jpeg 0.5.15's
+# trailing-expression `warn!(...)` at mcu_prog.rs:463 fail under rustc 1.93+.
+# `cargo install` re-resolves deps fresh (no lockfile ships with a library),
+# so without this pin it grabs zune-core 0.5.2 and breaks the build.  0.5.1
+# compiles cleanly.  Remove this pin once zune-jpeg/zune-core ship a fix.
+zune-core = "=0.5.1"
 # SVG rasterization for bundled/default world map
 resvg = { version = "0.48", default-features = false, features = ["text", "system-fonts"] }
 # GUI mode
