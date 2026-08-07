@@ -76,7 +76,8 @@ const DEFAULT_HOME_MARKER_STYLE: MarkerStyle = MarkerStyle::Ring;
 const DEFAULT_HOME_MARKER_SIZE: u8 = 14;
 
 /// Default connection line startup state.
-const DEFAULT_CONNECTION_LINES_ENABLED: bool = false;
+/// Connection lines are shown on startup; pressing `l` toggles them off.
+const DEFAULT_CONNECTION_LINES_ENABLED: bool = true;
 
 /// Default connection line glow radius in pixels.
 const DEFAULT_CONNECTION_LINE_GLOW: u8 = 1;

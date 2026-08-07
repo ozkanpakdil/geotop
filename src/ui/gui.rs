@@ -46,6 +46,7 @@ pub struct GuiState {
 impl GuiState {
     pub fn new(config: Arc<RwLock<Config>>) -> Self {
         let max_markers = config.read().max_markers;
+        let lines_on = config.read().connection_lines.enabled;
         Self {
             dots: VecDeque::with_capacity(max_markers),
             log: VecDeque::with_capacity(MAX_LOG_ROWS),
@@ -56,7 +57,7 @@ impl GuiState {
             throughput_ring: VecDeque::with_capacity(120),
             paused: AtomicBool::new(false),
             clear_requested: AtomicBool::new(false),
-            connection_lines: AtomicBool::new(false),
+            connection_lines: AtomicBool::new(lines_on),
             should_quit: AtomicBool::new(false),
             config,
         }

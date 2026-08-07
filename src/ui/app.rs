@@ -101,6 +101,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(geo: Arc<GeoLookup>, config: Arc<RwLock<Config>>) -> Self {
         let max_markers = config.read().max_markers;
+        let lines_on = config.read().connection_lines.enabled;
         Self {
             dots: Mutex::new(VecDeque::with_capacity(max_markers)),
             log: Mutex::new(VecDeque::with_capacity(MAX_LOG_ROWS)),
@@ -112,7 +113,7 @@ impl AppState {
             focused: Mutex::new(Panel::Map),
             paused: AtomicBool::new(false),
             clear_requested: AtomicBool::new(false),
-            connection_lines: AtomicBool::new(false),
+            connection_lines: AtomicBool::new(lines_on),
             throughput_ring: Mutex::new(VecDeque::with_capacity(120)),
             should_quit: AtomicBool::new(false),
             log_state: Mutex::new(ListState::default()),
