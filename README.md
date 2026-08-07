@@ -91,15 +91,18 @@ cargo install --path .
 #    see "IP2Location token" below, then either:
 #    export GEOTOP_DOWNLOAD_TOKEN=<your-token>
 #    or pass --download-token <your-token>
+#    NOTE: sudo strips env vars, so under sudo use `sudo -E`, the inline
+#    `sudo GEOTOP_DOWNLOAD_TOKEN=… geotop …` form, or --download-token.
+#    Details in "The token under sudo" below.
 
 # sniff all network interfaces
-sudo geotop --all-interfaces
+sudo -E geotop --all-interfaces
 
 # tail a web log (no privileges needed)
 geotop -f /var/log/nginx/access.log
 
 # sniff a network interface (needs CAP_NET_RAW / sudo)
-sudo geotop -i eth0
+sudo -E geotop -i eth0
 
 # both at once
 sudo geotop -i en0 -f /var/log/nginx/access.log
@@ -168,19 +171,52 @@ Choose whichever is most convenient for your workflow:
 
 | Method | Example |
 |--------|---------|
-| Shell environment variable | `export GEOTOP_DOWNLOAD_TOKEN=twU8vNJ0rXsqy9BY9Z5FjXLvmJHe5o9zv5f8lEwpmDxDg8WNOiC5HdcEYtcuSeaA` |
-| Command-line flag | `geotop --download-token twU8vNJ0rXsqy9BY9Z5FjXLvmJHe5o9zv5f8lEwpmDxDg8WNOiC5HdcEYtcuSeaA -f access.log` |
+| Shell environment variable | `export GEOTOP_DOWNLOAD_TOKEN=<your-token>` |
+| Command-line flag | `geotop --download-token <your-token> -f access.log` |
 | Pre-stage the DBs | `geotop --db-path /path/to/IP2LOCATION-LITE-DB11.BIN --proxy-db-path /path/to/IP2PROXY-LITE-PX11.BIN -f access.log` |
 
 The `--download-token` flag and `GEOTOP_DOWNLOAD_TOKEN` environment
 variable are accepted by the normal run modes **and** by the
 `update-dbs` subcommand.
 
+### The token under `sudo` (raw-capture modes)
+
+Raw packet capture (`--all-interfaces`, `-i`) needs root, so you run
+`geotop` under `sudo`. **`sudo` strips environment variables by default**,
+so a plain `export GEOTOP_DOWNLOAD_TOKEN=…` will *not* reach geotop and
+you'll get `Error: no GEOTOP_DOWNLOAD_TOKEN set.` Use one of these instead:
+
+```bash
+# 1) -E preserves your exported environment through sudo
+sudo -E geotop --all-interfaces
+
+# 2) pass the var inline (works regardless of sudo's env policy)
+sudo GEOTOP_DOWNLOAD_TOKEN=<your-token> geotop --all-interfaces
+
+# 3) pass the flag directly (no env var needed at all)
+sudo geotop --all-interfaces --download-token <your-token>
+```
+
+> **Database location under `sudo`:** `geotop` keeps its databases in
+> `~/.geotop/`. Under `sudo`, `$HOME` is **root's home** (`/var/root` on
+> macOS, `/root` on Linux), so the DBs are read from / written to
+> `/var/root/.geotop`, *not* your user's `~/.geotop`. If you already
+> downloaded the DBs as your normal user, point geotop at that directory
+> so it doesn't re-download ~1.7 GB:
+>
+> ```bash
+> sudo geotop --all-interfaces --db-dir "$HOME/.geotop"   # $HOME is expanded by YOUR shell before sudo runs
+> ```
+>
+> The simplest workflow: download the DBs once as your normal user with
+> `geotop update-dbs`, then run the capture under `sudo` with
+> `--db-dir /home/<you>/.geotop` (or `/Users/<you>/.geotop` on macOS).
+
 ---
 
 ## Environment variables
 
-Example `export GEOTOP_DOWNLOAD_TOKEN=twU8vNJ0rXsqy9BY9Z5FjXLvmJHe5o9zv5f8lEwpmDxDg8WNOiC5HdcEYtcuSeaA`
+Example `export GEOTOP_DOWNLOAD_TOKEN=<your-token>`
 
 | Name                       | Effect                                                                 |
 |----------------------------|------------------------------------------------------------------------|
@@ -247,14 +283,15 @@ for the canonical, always-up-to-date reference.  Key groups:
 
 ## Configuration
 
-`geotop` reads a JSON config file from `~/.config/geotop/config.json`.  Use
-`-C, --config <PATH>` to point at a different file.  All fields are optional
-and fall back to the same defaults used before configuration existed.
+`geotop` reads a JSON config file from `~/.geotop/config.json` (the same
+directory as the IP2Location databases).  Use `-C, --config <PATH>` to point
+at a different file.  All fields are optional and fall back to the same
+defaults used before configuration existed.
 
 A documented example ships at [`assets/config.example.json`](https://github.com/ozkanpakdil/geotop/blob/main/assets/config.example.json):
 
 ```bash
-cp assets/config.example.json ~/.config/geotop/config.json
+cp assets/config.example.json ~/.geotop/config.json
 # edit to taste
 ```
 
@@ -266,7 +303,7 @@ cp assets/config.example.json ~/.config/geotop/config.json
 | Top-level | `max_markers` | Maximum number of live markers retained. |
 | Top-level | `marker_style` | Marker shape: `dot`, `ring`, `cross`, or `x`. Default `ring`. |
 | Top-level | `marker_size` | Marker radius / arm length in pixels (1–20). Default `8`. |
-| `map.home` | `lat`, `lon` | Fallback coordinates of the pulsing home marker. |
+| Top-level | `download_token` | IP2Location LITE download token, persisted here automatically the first time you supply it via `--download-token` or `GEOTOP_DOWNLOAD_TOKEN`, so you don't have to re-pass it on every run (especially under `sudo`, which strips env vars). Editable by hand. |
 | `map.home` | `marker_style`, `marker_size` | Home marker shape/size. Default size `14`. |
 | `map.labels` | `show_country_labels` | Show country names on the map (GUI). |
 | `map.labels` | `show_city_labels` | Show city names next to markers when zoomed in (GUI). |
@@ -511,6 +548,8 @@ a download token. You can:
 
 - Sign up for a free token at <https://www.ip2location.com/free/download?file=DB11LITEBIN>
   and provide it via `GEOTOP_DOWNLOAD_TOKEN` or `--download-token`, or
+- If you're running under `sudo` and see `Error: no GEOTOP_DOWNLOAD_TOKEN set.`,
+  remember `sudo` strips env vars — see [The token under `sudo`](#the-token-under-sudo-raw-capture-modes).
 - Download the BINs from another machine and pass `--db-path` /
   `--proxy-db-path` explicitly, or
 - Run with `--no-proxy` if you don't care about the proxy / VPN /

@@ -28,6 +28,26 @@ use ip2location::DB;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
 
+/// Make a downloaded file / its directory world read+write so a later
+/// non-root invocation can move or delete DBs that were written under
+/// `sudo`.  On Unix we set files to `0666` and dirs to `0777` (the `+x`
+/// on the dir is what actually lets a non-owner *remove* entries); on
+/// non-Unix this is a no-op (Windows ACLs already let the creating user
+/// manage the files, and there is no mode concept).
+#[cfg(unix)]
+fn make_world_writable(path: &Path, is_dir: bool) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = if is_dir { 0o777 } else { 0o666 };
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .with_context(|| format!("chmod {}", path.display()))
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::needless_pass_by_value)]
+fn make_world_writable(_path: &Path, _is_dir: bool) -> Result<(), anyhow::Error> {
+    Ok(())
+}
+
 /// LITE-DB URLs (the same default GeoSentinel-Ingress uses).
 pub const DEFAULT_GEO_URL: &str = "https://www.ip2location.com/download?file=DB11LITEBIN";
 pub const DEFAULT_PROXY_URL: &str = "https://www.ip2location.com/download?file=PX11LITEBIN";
@@ -121,6 +141,9 @@ impl DatabaseManager {
     /// anything that's missing or older than `cfg.max_age_days`.
     pub async fn ensure_databases(self: &Arc<Self>) -> Result<()> {
         tokio::fs::create_dir_all(&self.cfg.data_dir).await?;
+        // chmod the dir a+rwx so files written under `sudo` can later be
+        // removed/replaced by an unprivileged invocation.
+        let _ = make_world_writable(&self.cfg.data_dir, true);
 
         let geo_path = self.cfg.geo_path();
         if self.needs_refresh(&geo_path).await? {
@@ -258,6 +281,11 @@ impl DatabaseManager {
         let zip_path = self.cfg.data_dir.join(format!("{expected_name}.zip"));
 
         self.download_file(&url, &zip_path).await?;
+        // IP2Location answers a bad/missing token with HTTP 200 and a short
+        // text body (e.g. "NO PERMISSION" / "INVALID TOKEN") instead of a zip.
+        // Validate the magic bytes before extracting so we surface the real
+        // cause instead of a cryptic "Could not find EOCD" from the unzip.
+        self.validate_zip_or_error(&zip_path).await?;
         self.extract_bin(&zip_path, target).await?;
 
         // Verify the .BIN opens — same self-check GeoSentinel performs.
@@ -296,7 +324,40 @@ impl DatabaseManager {
         }
         file.flush().await?;
         debug!(bytes = %file.metadata().await?.len(), "download complete");
+        // chmod a+rw so a later non-root run can delete this zip.
+        let _ = make_world_writable(dest, false);
         Ok(())
+    }
+
+    /// Confirm `path` actually looks like a zip archive.  IP2Location returns
+    /// HTTP 200 with a tiny text error (e.g. `NO PERMISSION`) when the token is
+    /// invalid; without this check we'd save that text as the `.zip` and fail
+    /// later in `extract_bin` with an opaque "Could not find EOCD".  On
+    /// failure the response body is read back and reported, and the bad file
+    /// is removed so the next run starts clean.
+    async fn validate_zip_or_error(&self, path: &Path) -> Result<()> {
+        use tokio::io::AsyncReadExt;
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .with_context(|| format!("opening {}", path.display()))?;
+        let mut head = [0u8; 4];
+        let n = file.read(&mut head).await.unwrap_or(0);
+        // Zip local-file header / EOCD / spanned markers all start with "PK".
+        if n >= 2 && head[0] == 0x50 && head[1] == 0x4B {
+            return Ok(());
+        }
+        // Not a zip — drain the (small) body to surface the upstream error text.
+        let mut rest = Vec::new();
+        let _ = file.read_to_end(&mut rest).await;
+        let mut body = head[..n].to_vec();
+        body.extend_from_slice(&rest);
+        let text = String::from_utf8_lossy(&body).trim().to_string();
+        let _ = tokio::fs::remove_file(path).await;
+        anyhow::bail!(
+            "IP2Location did not return a zip archive (token invalid/expired, or a transient server error). \
+             Server response: {:?}",
+            if text.is_empty() { "(empty body)" } else { &text },
+        )
     }
 
     async fn extract_bin(&self, zip_path: &Path, target: &Path) -> Result<()> {
@@ -322,6 +383,9 @@ impl DatabaseManager {
                         out.write_all(&buf[..n])?;
                     }
                     out.flush()?;
+                    // chmod a+rw so a later non-root run (or the user) can
+                    // delete/replace this .BIN even if geotop ran under sudo.
+                    let _ = make_world_writable(&target, false);
                     info!(file = %name, "extracted database");
                     return Ok::<(), anyhow::Error>(());
                 }

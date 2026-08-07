@@ -173,10 +173,21 @@ fn main() -> Result<()> {
 
         // ---------- resolve DBs ------------------------------------------------
         let db_dir = default_db_dir(&cli)?;
-        let token = cli
+
+        // Token precedence: --download-token flag > GEOTOP_DOWNLOAD_TOKEN env
+        // > config.json `download_token`.  The config value is persisted on
+        // first use so the token does not have to be re-supplied on every run
+        // — handy under `sudo`, which strips environment variables.
+        let provided_token = cli
             .download_token
             .clone()
             .unwrap_or_else(|| std::env::var("GEOTOP_DOWNLOAD_TOKEN").unwrap_or_default());
+        let stored_token = cfg.read().download_token.clone();
+        let token = if provided_token.is_empty() {
+            stored_token.clone()
+        } else {
+            provided_token.clone()
+        };
 
         // Without a token the IP2Location LITE CDN returns an error. If the
         // user has not pre-staged DBs, open the signup page and explain how
@@ -233,6 +244,24 @@ fn main() -> Result<()> {
             .ensure_databases()
             .await
             .context("ensuring IP2Location/IP2Proxy databases")?;
+
+        // Databases are present and valid — now it's safe to remember the
+        // token.  Persisting only after a successful download means a typo'd
+        // or revoked token is never saved over a previously-good one.  Future
+        // runs (including `sudo`, which strips env vars) won't need it passed.
+        if !provided_token.is_empty() && provided_token != stored_token {
+            let target_path = cfg_path.clone().or_else(|| {
+                directories::BaseDirs::new()
+                    .map(|b| b.home_dir().join(".geotop").join("config.json"))
+            });
+            if let Some(p) = target_path {
+                cfg.write().download_token = provided_token.clone();
+                match cfg.read().save(&p) {
+                    Ok(()) => info!(path = %p.display(), "persisted download token to config"),
+                    Err(e) => warn!(error = %e, path = %p.display(), "could not persist download token to config"),
+                }
+            }
+        }
 
         // Kick off a periodic hot-reload watcher so external `.BIN` updates are
         // picked up without restarting geotop (matches GeoSentinel).
@@ -500,12 +529,21 @@ async fn spawn_ingest_workers(
     Ok(handles)
 }
 
+/// Default per-user data directory: `~/.geotop` on every platform (macOS,
+/// Linux, Windows). The IP2Location `.BIN` databases live here. Overridable
+/// with `--db-dir`.
+///
+/// We deliberately use a single dot-directory in `$HOME` rather than the
+/// platform-specific `directories::ProjectDirs` location
+/// (`~/Library/Application Support/dev.geotop.geotop` on macOS,
+/// `~/.local/share/geotop` on Linux, `%APPDATA%\geotop\data` on Windows) so
+/// users find their databases in the same obvious place regardless of OS.
 fn default_db_dir(cli: &Cli) -> Result<PathBuf> {
     if let Some(p) = &cli.db_dir {
         return Ok(p.clone());
     }
-    let base = directories::ProjectDirs::from("dev", "geotop", "geotop")
-        .map(|p| p.data_dir().to_path_buf())
+    let base = directories::BaseDirs::new()
+        .map(|b| b.home_dir().join(".geotop"))
         .unwrap_or_else(|| PathBuf::from("./data"));
     Ok(base)
 }

@@ -1,4 +1,4 @@
-//! User-facing configuration loaded from `~/.config/geotop/config.json`
+//! User-facing configuration loaded from `~/.geotop/config.json`
 //! (or any path passed with `--config`).
 //!
 //! The file is JSON.  All fields are optional; missing values fall back to
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use directories::ProjectDirs;
+use directories::BaseDirs;
 use serde::{de::Visitor, Deserialize, Deserializer, Serialize};
 use tracing::info;
 
@@ -120,6 +120,15 @@ pub struct Config {
     /// GUI window size.
     #[serde(default)]
     pub window: WindowConfig,
+
+    /// IP2Location LITE download token persisted here so it does not have
+    /// to be re-supplied via `--download-token` / `GEOTOP_DOWNLOAD_TOKEN`
+    /// on every run (handy under `sudo`, which strips env vars).  Empty by
+    /// default; precedence when resolving is: CLI flag > env var > this
+    /// field.  When a token is first provided via flag/env it is written
+    /// back here automatically.
+    #[serde(default)]
+    pub download_token: String,
 }
 
 impl Default for Config {
@@ -134,6 +143,7 @@ impl Default for Config {
             colors: ColorConfig::default(),
             fonts: FontConfig::default(),
             window: WindowConfig::default(),
+            download_token: String::new(),
         }
     }
 }
@@ -153,8 +163,8 @@ impl Config {
             return Ok((Arc::new(cfg), Some(p.to_path_buf())));
         }
 
-        if let Some(dirs) = ProjectDirs::from("dev", "geotop", "geotop") {
-            let p = dirs.config_dir().join("config.json");
+        if let Some(home) = BaseDirs::new() {
+            let p = home.home_dir().join(".geotop").join("config.json");
             if p.exists() {
                 let cfg = Self::read_file(&p)
                     .with_context(|| format!("loading config from {}", p.display()))?;
@@ -172,6 +182,31 @@ impl Config {
         let data =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         Self::read_str(&data)
+    }
+
+    /// Serialize this config to `path` as pretty JSON, creating the parent
+    /// directory if needed.  Used to persist the IP2Location download token
+    /// so it does not have to be re-supplied on every run.
+    ///
+    /// On Unix the file and its parent dir are chmod'd world read/writable so
+    /// a config written under `sudo` can still be edited by an unprivileged
+    /// user afterwards (same reasoning as the DB-file chmod in the downloader).
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let json = serde_json::to_string_pretty(self).context("serializing config")?;
+        std::fs::write(path, json).with_context(|| format!("writing {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666));
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o777));
+            }
+        }
+        Ok(())
     }
 
     /// Parse and validate a JSON config from an in-memory string.

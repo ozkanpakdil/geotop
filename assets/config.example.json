@@ -3,6 +3,7 @@
   "max_markers": 5000,
   "marker_style": "ring",
   "marker_size": 8,
+  "download_token": "",
   "map": {
     "home": {
       "lat": 39.0,
