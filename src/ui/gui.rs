@@ -495,6 +495,14 @@ impl eframe::App for GuiApp {
             )
         };
 
+        // Keep the map animating while there are live dots.  egui otherwise
+        // only repaints on user interaction (mouse move/hover), which made the
+        // connection-arc "grow" animation freeze whenever the window was idle.
+        // When paused or empty we let it sleep to avoid burning CPU.
+        if !paused && active_dots > 0 {
+            ui.ctx().request_repaint();
+        }
+
         egui::Panel::top("status").show(ui, |ui: &mut egui::Ui| {
             ui.horizontal(|ui: &mut egui::Ui| {
                 ui.heading("geotop");
@@ -641,17 +649,15 @@ impl eframe::App for GuiApp {
 
                 // Draw active markers and connection lines as screen-space overlays so
                 // they remain visible even after the texture is scaled down.
-                let (dots, lines_enabled, ttl, marker_size, home_size, now, line_color) = {
+                let (dots, ttl, marker_size, home_size, now) = {
                     let state = self.state.lock();
                     let cfg = state.config.read();
                     (
                         state.dots.iter().cloned().collect::<Vec<_>>(),
-                        state.connection_lines.load(Ordering::Relaxed),
                         cfg.marker_ttl(),
                         cfg.marker_size,
                         cfg.map.home.marker_size,
                         Instant::now(),
-                        cfg.connection_lines.color.to_egui(),
                     )
                 };
 
@@ -734,16 +740,9 @@ impl eframe::App for GuiApp {
                     }
                 }
 
-                // Connection lines first (under markers).
-                if lines_enabled {
-                    for d in &dots {
-                        let target = map_to_screen(d.lat, d.lon);
-                        ui.painter().line_segment(
-                            [home_pos, target],
-                            egui::Stroke::new(1.5, line_color),
-                        );
-                    }
-                }
+                // Connection lines are baked into the map texture as animated
+                // parabolic arcs by `MapRenderer::redraw` (drawn under markers),
+                // so no screen-space overlay is needed here.
 
                 // Active IP dots + hover detection.
                 let mut hovered: Option<(&MapDot, egui::Pos2, f32)> = None;

@@ -79,7 +79,7 @@ const DEFAULT_HOME_MARKER_SIZE: u8 = 14;
 const DEFAULT_CONNECTION_LINES_ENABLED: bool = false;
 
 /// Default connection line glow radius in pixels.
-const DEFAULT_CONNECTION_LINE_GLOW: u8 = 2;
+const DEFAULT_CONNECTION_LINE_GLOW: u8 = 1;
 
 /// Top-level configuration.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

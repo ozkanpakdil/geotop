@@ -322,23 +322,33 @@ impl MapRenderer {
         let (hx, hy) = vp.latlon_to_pixel(home_dot.lat, home_dot.lon, w, h);
         let home_visible = vp.contains(home_dot.lat, home_dot.lon, w, h);
 
-        // Draw Matrix-style connection lines first (under markers).
+        let ttl_secs = ttl.as_secs_f64();
+        let now = Instant::now();
+
+        // Draw animated parabolic connection arcs first (under markers).
         if lines_enabled {
-            let line_color = cfg.connection_lines.color.to_rgba(220);
+            let base_color = cfg.connection_lines.color;
             let glow = cfg.connection_lines.glow_size as i32;
             for d in dots {
                 if !vp.contains(d.lat, d.lon, w, h) {
                     continue;
                 }
+                let age = now.duration_since(d.created_at).as_secs_f64();
+                let alpha = 1.0 - (age / ttl_secs).clamp(0.0, 1.0);
+                if alpha <= 0.0 {
+                    continue;
+                }
+                // Fade the arc with its dot, and animate it growing from home
+                // toward the node over the first LINE_DRAW_SECS of its life.
+                let line_color = base_color.to_rgba((alpha * 220.0) as u8);
+                let progress = line_draw_progress(age);
                 let (px, py) = vp.latlon_to_pixel(d.lat, d.lon, w, h);
-                draw_connection_line(&mut work, hx, hy, px, py, line_color, glow);
+                draw_connection_line(&mut work, hx, hy, px, py, line_color, glow, progress);
             }
         }
 
         // Plot each dot, faded by age.  The outer halo keeps the marker visible
         // after the high-resolution map is downscaled to the terminal/GUI.
-        let ttl_secs = ttl.as_secs_f64();
-        let now = Instant::now();
         for d in dots {
             if !vp.contains(d.lat, d.lon, w, h) {
                 continue;
@@ -1533,31 +1543,54 @@ fn draw_line(
     }
 }
 
-/// Matrix-style glowing line from the home marker to a target dot.
-/// Draws a bright Bresenham core plus a soft per-pulse green glow around it.
-fn draw_connection_line(
+/// Duration (in seconds) over which a connection arc grows from the home
+/// marker out to its target dot.  Short enough to feel snappy, long enough
+/// that the "drawing" motion is visible on the map.
+const LINE_DRAW_SECS: f64 = 0.7;
+
+/// Ease-out cubic — the arc starts fast from home and decelerates as it
+/// approaches the node, like a tracer travelling along the curve.
+fn line_draw_progress(age_secs: f64) -> f32 {
+    let t = (age_secs / LINE_DRAW_SECS).clamp(0.0, 1.0);
+    let eased = 1.0 - (1.0 - t).powi(3);
+    eased as f32
+}
+
+/// Quadratic-Bézier control point for a parabolic arc from `(x0, y0)` to
+/// `(x1, y1)`.  The arc bows "upward" (toward the top of the image, like a
+/// flight path on a world map) with a magnitude proportional to the distance,
+/// so long connections arc visibly while short ones stay nearly straight.
+fn arc_control_point(x0: f32, y0: f32, x1: f32, y1: f32) -> (f32, f32) {
+    let mx = (x0 + x1) * 0.5;
+    let my = (y0 + y1) * 0.5;
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let dist = (dx * dx + dy * dy).sqrt();
+    let len = dist.max(1.0);
+    // Unit perpendicular to the home→node segment.
+    let perp_x = -dy / len;
+    let perp_y = dx / len;
+    // ~18% of the distance, with a floor so even short hops bow a little.
+    let mag = (dist * 0.18).max(8.0);
+    // Choose the perpendicular sign that lifts the control point up
+    // (smaller y = north on the image), giving a consistent flight-arc look.
+    let sign = if perp_y > 0.0 { -1.0 } else { 1.0 };
+    (mx + perp_x * mag * sign, my + perp_y * mag * sign)
+}
+
+/// Bresenham line that both plots the core pixel and records the coordinate
+/// so a thin glow can be applied afterwards in a single pass.
+fn plot_line_collect(
     img: &mut RgbaImage,
+    pixels: &mut Vec<(i32, i32)>,
     x0: i32,
     y0: i32,
     x1: i32,
     y1: i32,
+    w: u32,
+    h: u32,
     color: Rgba<u8>,
-    glow: i32,
 ) {
-    let w = img.width();
-    let h = img.height();
-
-    // Core line.
-    draw_line(img, x0, y0, x1, y1, w, h, color);
-
-    if glow <= 0 {
-        return;
-    }
-
-    // Soft glow around every pixel on the line.  Use a small box blur so
-    // the glow looks like a neon tube even when the line is diagonal.
-    // We collect line pixels first to avoid re-iterating the line algorithm.
-    let mut pixels: Vec<(i32, i32)> = Vec::new();
     let (mut x, mut y) = (x0, y0);
     let dx = (x1 - x0).abs();
     let dy = -(y1 - y0).abs();
@@ -1565,7 +1598,10 @@ fn draw_connection_line(
     let sy = if y0 < y1 { 1 } else { -1 };
     let mut err = dx + dy;
     loop {
-        pixels.push((x, y));
+        if x >= 0 && y >= 0 && x < w as i32 && y < h as i32 {
+            img.put_pixel(x as u32, y as u32, color);
+            pixels.push((x, y));
+        }
         if x == x1 && y == y1 {
             break;
         }
@@ -1579,43 +1615,96 @@ fn draw_connection_line(
             y += sy;
         }
     }
+}
 
-    let glow_radius = glow.min(8).max(1);
-    let falloff = 0.4f32;
-    for gy in 1..=glow_radius {
-        let alpha_mul = falloff.powi(gy);
-        for &(lx, ly) in &pixels {
-            for sign in [-1, 1] {
-                let gx = lx;
-                let gy_off = ly + sign * gy;
-                if gx >= 0 && gy_off >= 0 && gx < w as i32 && gy_off < h as i32 {
-                    let gcolor = Rgba([
-                        color.0[0],
-                        color.0[1],
-                        color.0[2],
-                        (color.0[3] as f32 * alpha_mul).min(255.0) as u8,
-                    ]);
-                    blend_pixel(img, gx as u32, gy_off as u32, gcolor);
-                }
-            }
-        }
+/// Animated parabolic (quadratic-Bézier) connection arc from the home marker
+/// to a target dot.
+///
+/// `progress` ∈ [0, 1] controls how much of the arc is drawn — 0 is just the
+/// home endpoint, 1 is the full arc reaching the dot — so freshly created
+/// connections appear to "grow" out from home toward the node.  The core is a
+/// single-pixel Bézier with a thin soft glow, noticeably slimmer than the old
+/// straight neon line.  A bright leading head marks the travelling tip while
+/// the arc is still being drawn.
+fn draw_connection_line(
+    img: &mut RgbaImage,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    color: Rgba<u8>,
+    glow: i32,
+    progress: f32,
+) {
+    let w = img.width();
+    let h = img.height();
+
+    let (fx0, fy0) = (x0 as f32, y0 as f32);
+    let (fx1, fy1) = (x1 as f32, y1 as f32);
+    let (cx, cy) = arc_control_point(fx0, fy0, fx1, fy1);
+
+    // More samples for longer arcs so the curve stays smooth.
+    let dist = ((fx1 - fx0).powi(2) + (fy1 - fy0).powi(2)).sqrt();
+    let steps = ((dist / 3.0).ceil() as i32).clamp(12, 200) as usize;
+    let drawn = ((steps as f32) * progress)
+        .round()
+        .clamp(1.0, steps as f32) as usize;
+
+    let bez = |t: f32| -> (f32, f32) {
+        let u = 1.0 - t;
+        (
+            u * u * fx0 + 2.0 * u * t * cx + t * t * fx1,
+            u * u * fy0 + 2.0 * u * t * cy + t * t * fy1,
+        )
+    };
+
+    let mut pixels: Vec<(i32, i32)> = Vec::with_capacity(drawn * 4);
+    let mut prev = bez(0.0);
+    for i in 1..=drawn {
+        let t = (i as f32) / (steps as f32);
+        let cur = bez(t);
+        plot_line_collect(
+            img,
+            &mut pixels,
+            prev.0 as i32,
+            prev.1 as i32,
+            cur.0 as i32,
+            cur.1 as i32,
+            w,
+            h,
+            color,
+        );
+        prev = cur;
     }
 
-    // Horizontal glow as well so diagonal lines look evenly thick.
-    for gx in 1..=glow_radius {
-        let alpha_mul = falloff.powi(gx);
+    // Bright leading head at the current tip while the arc is still growing.
+    if progress < 1.0 {
+        plot_glow(img, prev.0 as i32, prev.1 as i32, color);
+    }
+
+    if glow <= 0 {
+        return;
+    }
+
+    // Thin soft glow around the drawn portion — a small box blur so the arc
+    // reads as a neon trace even when diagonal.  Kept to a tight radius so the
+    // line stays slim.
+    let glow_radius = glow.min(2).max(1);
+    let falloff = 0.4f32;
+    for g in 1..=glow_radius {
+        let alpha_mul = falloff.powi(g);
         for &(lx, ly) in &pixels {
-            for sign in [-1, 1] {
-                let gx_off = lx + sign * gx;
-                let gy_off = ly;
-                if gx_off >= 0 && gy_off >= 0 && gx_off < w as i32 && gy_off < h as i32 {
+            for (ox, oy) in [(0, g), (0, -g), (g, 0), (-g, 0)] {
+                let gx = lx + ox;
+                let gy = ly + oy;
+                if gx >= 0 && gy >= 0 && gx < w as i32 && gy < h as i32 {
                     let gcolor = Rgba([
                         color.0[0],
                         color.0[1],
                         color.0[2],
                         (color.0[3] as f32 * alpha_mul).min(255.0) as u8,
                     ]);
-                    blend_pixel(img, gx_off as u32, gy_off as u32, gcolor);
+                    blend_pixel(img, gx as u32, gy as u32, gcolor);
                 }
             }
         }
@@ -1738,6 +1827,11 @@ mod tests {
         cfg.connection_lines.glow_size = 2;
         let cfg = Arc::new(RwLock::new(cfg));
         let renderer = MapRenderer::load(cfg).unwrap();
+        // Age the dot past LINE_DRAW_SECS so the full arc is drawn (a freshly
+        // created dot only draws the growing stub of the animated arc).
+        let created = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap();
         let dot = MapDot {
             lat: 51.5,
             lon: -0.1,
@@ -1746,7 +1840,7 @@ mod tests {
             severity: crate::event::Severity::Info,
             src_ip: "1.2.3.4".parse::<IpAddr>().unwrap(),
             proxy: None,
-            created_at: Instant::now(),
+            created_at: created,
         };
         let home = HomeLocation {
             lat: 0.0,

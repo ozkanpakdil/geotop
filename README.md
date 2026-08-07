@@ -48,7 +48,8 @@ https://crates.io/crates/geotop
   IP and places a persistent, larger marker at that lat/lon. Override
   with `--home lat,lon` or `map.home.lat` / `map.home.lon` in config.
 - **Matrix-style connection lines** from home to every active marker,
-  toggled with `l` (TUI) or from the top bar (GUI).
+  toggled with `l` (TUI) or from the top bar (GUI). Each line is a thin
+  parabolic arc that animates, drawing out from home toward the node.
 - **Native GUI** with `--gui`: zoomable/pannable map, scrollable live
   log, top-talkers bar chart, throughput sparkline. Mouse wheel zooms,
   drag pans, hover over a marker to see IP/city/proxy details,
