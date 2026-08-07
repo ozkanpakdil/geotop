@@ -170,8 +170,13 @@ impl Config {
     pub(crate) fn read_file(path: &Path) -> Result<Self> {
         let data =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let cfg: Config = serde_json::from_str(&data)
-            .with_context(|| format!("parsing JSON config {}", path.display()))?;
+        Self::read_str(&data)
+    }
+
+    /// Parse and validate a JSON config from an in-memory string.
+    pub(crate) fn read_str(data: &str) -> Result<Self> {
+        let cfg: Config =
+            serde_json::from_str(data).with_context(|| "parsing JSON config")?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -834,9 +839,11 @@ mod tests {
 
     #[test]
     fn example_config_loads() {
-        let root = std::path::PathBuf::from(std::env!("CARGO_MANIFEST_DIR"));
-        let path = root.join("assets").join("config.example.json");
-        let cfg = Config::read_file(&path).expect("example config should parse and validate");
+        // Embed the example config at compile time so the test does not depend
+        // on the source tree / CARGO_MANIFEST_DIR being present (works for
+        // `cargo test` on a published crate too).
+        const EXAMPLE: &str = include_str!("../assets/config.example.json");
+        let cfg = Config::read_str(EXAMPLE).expect("example config should parse and validate");
         assert_eq!(cfg.marker_ttl_seconds, 8);
         assert_eq!(cfg.colors.info, ColorDef::from_rgb(0x50, 0xDC, 0x78));
     }
